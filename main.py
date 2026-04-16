@@ -35,7 +35,7 @@ app.add_middleware(
 # ============================================================
  
 ZONES_NON_CONSTRUCTIBLES = ["AGR", "FOR", "PARC", "VERD", "JAR"]
-RATIO_CIRCULATIONS = 0.82  # 18% de SCB part en circulations communes
+RATIO_SCB_TO_SH = 0.80  # Surface habitable nette ≈ 80% de la SCB (murs, gaines, etc.)
  
 MIX_STANDARD = {
     "T1_studio": {"pct": 0.20, "shn_m2": 35, "scb_m2": 44},
@@ -693,10 +693,10 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
     if combles:
         trace.append(f"  Combles/retrait: ~60% emprise = {scb_combles:.1f} m²")
  
-    scb_brute = scb_niveaux + scb_combles
-    scb_totale = scb_brute * RATIO_CIRCULATIONS
-    trace.append(f"  SCB brute: {scb_brute:.1f} m²")
-    trace.append(f"  Déduction circulations ({int((1-RATIO_CIRCULATIONS)*100)}%): {scb_brute:.1f} × {RATIO_CIRCULATIONS} = {scb_totale:.1f} m²")
+    scb_totale = scb_niveaux + scb_combles
+    surface_habitable = scb_totale * RATIO_SCB_TO_SH
+    trace.append(f"  SCB totale: {scb_totale:.1f} m²")
+    trace.append(f"  Surface habitable (SCB × {RATIO_SCB_TO_SH}): {surface_habitable:.1f} m²")
  
     if est_pap_nq and pap_nq_data:
         cus_nq = pap_nq_data.get("cus_max") or pap_nq_data.get("CUS_max")
@@ -739,6 +739,7 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
  
     scb_commerce = 0
     scb_logement = scb_totale
+    sh_logement = surface_habitable  # surface habitable dédiée aux logements
  
     if type_zone == "Mixte" and commerce_ok:
         pct_log = (min_scb_log_pct or 50) / 100
@@ -747,21 +748,23 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         if scb_logement < scb_totale * pct_log:
             scb_logement = scb_totale * pct_log
             scb_commerce = scb_totale - scb_logement
+        sh_logement = scb_logement * RATIO_SCB_TO_SH
         trace.append(f"  Zone mixte — part min logement: {min_scb_log_pct or 50}%")
         trace.append(f"  SCB commerce (RDC ~80%): {scb_commerce:.1f} m²")
         trace.append(f"  SCB logement: {scb_logement:.1f} m²")
     elif not logement_ok:
         scb_logement = 0
         scb_commerce = scb_totale
+        sh_logement = 0
         trace.append(f"  Zone non résidentielle — SCB activités: {scb_commerce:.1f} m²")
     else:
         trace.append(f"  Zone résidentielle — SCB logement: {scb_logement:.1f} m²")
  
     nb_logements = 0
-    if logement_ok and scb_logement > 0:
-        nb_log_brut = scb_logement / SCB_MOYENNE_PAR_LOGEMENT
-        trace.append(f"  SCB moy/logement: {SCB_MOYENNE_PAR_LOGEMENT:.1f} m²")
-        trace.append(f"  Nb logements brut: {scb_logement:.1f} / {SCB_MOYENNE_PAR_LOGEMENT:.1f} = {nb_log_brut:.1f}")
+    if logement_ok and sh_logement > 0:
+        nb_log_brut = sh_logement / SCB_MOYENNE_PAR_LOGEMENT
+        trace.append(f"  SH moy/logement: {SCB_MOYENNE_PAR_LOGEMENT:.1f} m²")
+        trace.append(f"  Nb logements brut: {sh_logement:.1f} / {SCB_MOYENNE_PAR_LOGEMENT:.1f} = {nb_log_brut:.1f}")
  
         nb_log = nb_log_brut
  
@@ -890,6 +893,7 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         "scb_totale_m2": round(scb_totale, 1),
         "scb_niveaux_pleins_m2": round(scb_niveaux, 1),
         "scb_combles_retrait_m2": round(scb_combles, 1),
+        "surface_habitable_m2": round(scb_totale * RATIO_SCB_TO_SH, 1),
         "scb_logement_m2": round(scb_logement, 1),
         "scb_commerce_m2": round(scb_commerce, 1),
         "nb_logements": nb_logements,
