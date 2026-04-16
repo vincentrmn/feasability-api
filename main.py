@@ -1,42 +1,42 @@
 """
 FEASIBILITY.LU — API de calcul de faisabilité immobilière V2
 Moteur GÉNÉRIQUE — les règles viennent d'Airtable via n8n
-
+ 
 V2.1 — Ajout emprise_polygon_luref:
   - Input optionnel `parcelle_polygon_luref` (polygone en EPSG:2169)
   - Calcul d'emprise polygonale via Oriented Bounding Box + inset des reculs
   - Output `programme.emprise_polygon_luref` (4 coins géoréférencés) pour la 3D
   - 100% rétrocompatible : si pas de polygone fourni, comportement v2.0 inchangé
 """
-
+ 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
 import math
 import json
-
+ 
 app = FastAPI(
     title="Feasibility.lu API",
     description="Moteur de calcul de faisabilité immobilière — Luxembourg — V2 Générique",
     version="2.1.0",
 )
-
+ 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
+ 
+ 
 # ============================================================
 # CONSTANTES RÉGLEMENTAIRES (RGD 8 mars 2017)
 # ============================================================
-
+ 
 ZONES_NON_CONSTRUCTIBLES = ["AGR", "FOR", "PARC", "VERD", "JAR"]
 RATIO_CIRCULATIONS = 0.82  # 18% de SCB part en circulations communes
-
+ 
 MIX_STANDARD = {
     "T1_studio": {"pct": 0.20, "shn_m2": 35, "scb_m2": 44},
     "T2":        {"pct": 0.35, "shn_m2": 52, "scb_m2": 65},
@@ -44,12 +44,12 @@ MIX_STANDARD = {
     "T4+":       {"pct": 0.15, "shn_m2": 90, "scb_m2": 113},
 }
 SCB_MOYENNE_PAR_LOGEMENT = sum(t["scb_m2"] * t["pct"] for t in MIX_STANDARD.values())
-
-
+ 
+ 
 # ============================================================
 # HELPERS GÉOMÉTRIQUES — Phase 2
 # ============================================================
-
+ 
 def polygon_area_2d(pts):
     """Surface d'un polygone 2D via la formule de Shoelace. Entrée: [[x, y], ...]"""
     if not pts or len(pts) < 3:
@@ -61,45 +61,45 @@ def polygon_area_2d(pts):
         x2, y2 = pts[(i + 1) % n]
         s += x1 * y2 - x2 * y1
     return abs(s / 2.0)
-
-
+ 
+ 
 def compute_oriented_bbox(polygon_pts):
     """
     Calcule l'Oriented Bounding Box (OBB) d'un polygone 2D via rotating calipers light.
-
+ 
     Pour chaque arête du polygone on teste l'alignement comme axe candidat,
     on fait tourner tous les points dans ce repère, on calcule la bbox
     axis-aligned, et on garde l'orientation qui minimise la surface.
-
+ 
     Retourne (cx, cy, width, depth, angle_rad) où :
     - (cx, cy) : centre de l'OBB dans le CRS d'entrée
     - width : dimension la plus courte (= façade)
     - depth : dimension la plus longue (= profondeur parcelle)
     - angle_rad : rotation du repère local "width" par rapport à l'axe X du CRS
-
+ 
     Retourne None si polygone invalide (< 3 sommets).
     """
     if not polygon_pts or len(polygon_pts) < 3:
         return None
-
+ 
     n = len(polygon_pts)
     best = None  # (area, cx, cy, w, h, edge_angle)
-
+ 
     for i in range(n):
         p1 = polygon_pts[i]
         p2 = polygon_pts[(i + 1) % n]
         edge_angle = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-
+ 
         # rotation de -edge_angle : l'arête devient horizontale
         cos_a = math.cos(-edge_angle)
         sin_a = math.sin(-edge_angle)
         xs = [cos_a * (p[0] - p1[0]) - sin_a * (p[1] - p1[1]) for p in polygon_pts]
         ys = [sin_a * (p[0] - p1[0]) + cos_a * (p[1] - p1[1]) for p in polygon_pts]
-
+ 
         w = max(xs) - min(xs)
         h = max(ys) - min(ys)
         area = w * h
-
+ 
         if best is None or area < best[0]:
             cx_local = (max(xs) + min(xs)) / 2
             cy_local = (max(ys) + min(ys)) / 2
@@ -109,9 +109,9 @@ def compute_oriented_bbox(polygon_pts):
             cx = cos_p * cx_local - sin_p * cy_local + p1[0]
             cy = sin_p * cx_local + cos_p * cy_local + p1[1]
             best = (area, cx, cy, w, h, edge_angle)
-
+ 
     _, cx, cy, w, h, edge_angle = best
-
+ 
     # Convention : width = plus petit côté (façade), depth = plus grand côté (profondeur).
     # Après la rotation par -edge_angle, l'axe X local est parallèle à l'arête testée.
     # Si w <= h : l'arête testée est la petite dimension → axe width = edge_angle.
@@ -122,7 +122,7 @@ def compute_oriented_bbox(polygon_pts):
     else:
         width, depth = h, w
         width_axis_angle = edge_angle + math.pi / 2
-
+ 
     return {
         "center_x": cx,
         "center_y": cy,
@@ -130,32 +130,32 @@ def compute_oriented_bbox(polygon_pts):
         "depth": depth,
         "angle_rad": width_axis_angle,
     }
-
-
+ 
+ 
 def compute_emprise_polygon(parcel_polygon, recul_avant, recul_lateral, recul_arriere,
                             prof_max=None):
     """
     Calcule l'emprise au sol polygonale d'un bâtiment projeté sur une parcelle réelle,
     à partir de son Oriented Bounding Box et des reculs réglementaires.
-
+ 
     MVP : approche rectangulaire alignée sur l'OBB. Fonctionne bien pour les parcelles
     rectangulaires/trapézoïdales classiques Strassen. Pour les parcelles en L, en T,
     ou avec concavités fortes, cet algorithme approximera par leur OBB enveloppante.
-
+ 
     Hypothèses documentées (à fixer en Phase 3) :
     - Pas d'info sur l'orientation de la rue : le bâtiment est **centré** sur l'OBB
       sans asymétrie avant/arrière. En réalité, le bâtiment devrait être décalé vers
       l'avant. Phase 3 : passer l'axe de la rue en input pour corriger.
     - Width de l'OBB = façade (petit côté), Depth = profondeur (grand côté). Valable
       pour >90% des parcelles résidentielles, faux sur les parcelles d'angle.
-
+ 
     Args:
         parcel_polygon: list[[x, y]] en LUREF (EPSG:2169 ou tout CRS métrique)
         recul_avant: float en mètres
         recul_lateral: float en mètres (appliqué des deux côtés)
         recul_arriere: float en mètres
         prof_max: float optionnel, profondeur maximale absolue du bâtiment
-
+ 
     Returns:
         dict avec :
         - corners: list[[x, y]] — 4 coins de l'emprise dans le CRS d'entrée
@@ -171,23 +171,23 @@ def compute_emprise_polygon(parcel_polygon, recul_avant, recul_lateral, recul_ar
     """
     if not parcel_polygon or len(parcel_polygon) < 3:
         return None
-
+ 
     obb = compute_oriented_bbox(parcel_polygon)
     if obb is None:
         return None
-
+ 
     cx, cy = obb["center_x"], obb["center_y"]
     obb_width = obb["width"]
     obb_depth = obb["depth"]
     angle = obb["angle_rad"]
-
+ 
     ra = recul_avant or 0
     rl = recul_lateral or 0
     rr = recul_arriere or 0
-
+ 
     new_width = obb_width - 2 * rl
     new_depth = obb_depth - ra - rr
-
+ 
     warning = None
     if new_width <= 0 or new_depth <= 0:
         warning = (
@@ -206,11 +206,11 @@ def compute_emprise_polygon(parcel_polygon, recul_avant, recul_lateral, recul_ar
             "area_m2": 0.0,
             "warning": warning,
         }
-
+ 
     # Limite profondeur max
     if prof_max and new_depth > prof_max:
         new_depth = prof_max
-
+ 
     # Coins dans le repère local (width = X local, depth = Y local), centrés sur (0,0)
     half_w = new_width / 2
     half_d = new_depth / 2
@@ -220,7 +220,7 @@ def compute_emprise_polygon(parcel_polygon, recul_avant, recul_lateral, recul_ar
         ( half_w,  half_d),
         (-half_w,  half_d),
     ]
-
+ 
     # Rotation + translation vers le CRS d'origine
     cos_a = math.cos(angle)
     sin_a = math.sin(angle)
@@ -229,7 +229,7 @@ def compute_emprise_polygon(parcel_polygon, recul_avant, recul_lateral, recul_ar
         x = cos_a * lx - sin_a * ly + cx
         y = sin_a * lx + cos_a * ly + cy
         corners.append([round(x, 2), round(y, 2)])
-
+ 
     return {
         "corners": corners,
         "orientation_rad": round(angle, 4),
@@ -241,12 +241,12 @@ def compute_emprise_polygon(parcel_polygon, recul_avant, recul_lateral, recul_ar
         "area_m2": round(new_width * new_depth, 1),
         "warning": warning,
     }
-
-
+ 
+ 
 # ============================================================
 # DATA MODELS
 # ============================================================
-
+ 
 class CalculRequestV2(BaseModel):
     surface_terrain_m2: float = Field(..., gt=0)
     regles_zone: Dict[str, Any] = Field(..., description="Règles depuis Airtable Zones_PAG")
@@ -264,8 +264,8 @@ class CalculRequestV2(BaseModel):
         description="Polygone de la parcelle en EPSG:2169 (LUREF). Format: [[x,y], [x,y], ...]. "
                     "Si fourni, le moteur calcule emprise_polygon_luref via OBB+inset."
     )
-
-
+ 
+ 
 # Ancien format pour rétrocompatibilité
 class CalculRequestV1(BaseModel):
     surface_terrain_m2: float = Field(..., gt=0)
@@ -275,14 +275,31 @@ class CalculRequestV1(BaseModel):
     route_arlon: bool = False
     adresse: Optional[str] = None
     num_cadastral: Optional[str] = None
-
-
+ 
+ 
 # ============================================================
 # MAPPING AIRTABLE → MOTEUR
 # ============================================================
-
+ 
+def extract_airtable_value(val):
+    """
+    Extrait la valeur d'un champ Airtable.
+    Les champs singleSelect/multipleSelects retournent des objets {id, name, color}.
+    Cette fonction normalise vers une string ou une valeur primitive.
+    """
+    if isinstance(val, dict):
+        # singleSelect : {"id": "sel...", "name": "QE1 résidentiel", "color": "..."}
+        return val.get("name", "")
+    if isinstance(val, list) and val and isinstance(val[0], dict):
+        # multipleSelects : [{"id": "sel...", "name": "..."}, ...]
+        return ", ".join(v.get("name", "") for v in val)
+    return val
+ 
+ 
 def parse_niveaux(val):
-    """Parse '3 + combles/retrait' → (3, True) ou '2' → (2, False)"""
+    """Parse '3 + combles/retrait' → (3, True) ou '2' → (2, False)
+    Gère aussi les objets singleSelect Airtable {name: '2 + combles/retrait'}."""
+    val = extract_airtable_value(val)
     if not val:
         return 1, False
     s = str(val).lower()
@@ -291,31 +308,63 @@ def parse_niveaux(val):
     nums = re.findall(r'\d+', s)
     niveaux = int(nums[0]) if nums else 1
     return niveaux, combles
-
-
+ 
+ 
 def parse_float(val):
-    """Parse une valeur en float, retourne None si impossible"""
-    if val is None or val == "" or val == "libre":
+    """Parse une valeur en float, retourne None si impossible.
+    Gère aussi les objets singleSelect Airtable {name: '3.5'} et les valeurs 'libre'."""
+    val = extract_airtable_value(val)
+    if val is None or val == "" or str(val).lower() in ("libre", "null", "none"):
+        return None
+    # Nettoyer les suffixes textuels (ex: "H corniche/2 (min 4m)")
+    if isinstance(val, str) and not val.replace('.', '', 1).replace('-', '', 1).strip().isdigit():
+        import re
+        nums = re.findall(r'[\d.]+', val)
+        if nums:
+            try:
+                return float(nums[0])
+            except (ValueError, TypeError):
+                return None
         return None
     try:
         return float(val)
     except (ValueError, TypeError):
         return None
-
-
+ 
+ 
 def map_airtable_to_regles(r):
-    """Convertit une ligne Airtable (Zones_PAG) en dict pour le moteur"""
+    """Convertit une ligne Airtable (Zones_PAG) en dict pour le moteur.
+    
+    IMPORTANT : Les champs singleSelect Airtable arrivent sous forme d'objets
+    {"id": "sel...", "name": "valeur", "color": "..."} — extract_airtable_value()
+    normalise ces objets vers des strings avant usage.
+    """
     niveaux, combles = parse_niveaux(r.get("Niveaux_hors_sol_max"))
-
+ 
+    # PAP_QE peut être un singleSelect ou une string
+    pap_qe_raw = r.get("PAP_QE", "")
+    pap_qe = extract_airtable_value(pap_qe_raw) or ""
+ 
+    # Constructible peut être singleSelect
+    constructible_raw = r.get("Constructible", "Non")
+    constructible = extract_airtable_value(constructible_raw) or "Non"
+ 
+    # CSS_max et CUS_max sont deux noms possibles pour le même champ (migration en cours)
+    css_val = r.get("CUS_max") or r.get("CSS_max")
+ 
+    # Nb_logements_max : peut contenir "2 par construction" → on extrait le nombre
+    nb_max_raw = r.get("Nb_logements_max")
+    nb_max = parse_float(nb_max_raw)  # parse_float extrait le premier nombre
+ 
     return {
         "commune": r.get("Commune", ""),
         "code_zone": r.get("Code_zone", ""),
         "nom_zone": r.get("Nom_zone", ""),
-        "pap_qe": r.get("PAP_QE", ""),
-        "type_zone": r.get("Type_zone", ""),
-        "constructible": r.get("Constructible", "Non"),
-        "logement_autorise": r.get("Logement_autorise", "Non"),
-        "commerce_autorise": r.get("Commerce_autorise", "Non"),
+        "pap_qe": pap_qe,
+        "type_zone": extract_airtable_value(r.get("Type_zone", "")),
+        "constructible": constructible,
+        "logement_autorise": extract_airtable_value(r.get("Logement_autorise", "Non")),
+        "commerce_autorise": extract_airtable_value(r.get("Commerce_autorise", "Non")),
         "h_corniche_max": parse_float(r.get("Hauteur_corniche_max_m")),
         "h_faite_max": parse_float(r.get("Hauteur_faite_max_m")),
         "h_acrotere_max": parse_float(r.get("Hauteur_acrotere_max_m")),
@@ -328,8 +377,8 @@ def map_airtable_to_regles(r):
         "recul_arriere_hors_sol_min": parse_float(r.get("Recul_arriere_min_m")),
         "profondeur_max_hors_sol": parse_float(r.get("Profondeur_max_m")),
         "cos_max": parse_float(r.get("COS_max")),
-        "css_max": parse_float(r.get("CSS_max")),
-        "nb_log_max_par_construction": parse_float(r.get("Nb_logements_max")),
+        "css_max": parse_float(css_val),
+        "nb_log_max_par_construction": nb_max,
         "dl_max": parse_float(r.get("DL_max_log_ha")),
         "min_scb_logement_pct": parse_float(r.get("Min_SCB_logement_%_QE")),
         "notes_reculs": r.get("Notes_reculs", ""),
@@ -339,12 +388,12 @@ def map_airtable_to_regles(r):
         "profondeur_sous_sol_max": parse_float(r.get("Profondeur_sous_sol_max_m")),
         "recul_arriere_sous_sol_min": parse_float(r.get("Recul_arriere_sous_sol_min_m")),
     }
-
-
+ 
+ 
 # ============================================================
 # PARKINGS
 # ============================================================
-
+ 
 def calculer_parkings(nb_logements, mix_logements, scb_commerce=0):
     p_min = 0
     p_max = 0
@@ -361,34 +410,34 @@ def calculer_parkings(nb_logements, mix_logements, scb_commerce=0):
         p_com = math.ceil(scb_commerce / 20)
         p_min += p_com; p_max += p_com
     return {"min": p_min, "max": p_max}
-
-
+ 
+ 
 def calculer_parkings_velo(nb_logements, scb_commerce=0):
     v = nb_logements
     if scb_commerce > 0:
         v += math.ceil(scb_commerce / 50) if scb_commerce < 2000 else math.ceil(scb_commerce / 200)
     return v
-
-
+ 
+ 
 # ============================================================
 # MOTEUR DE CALCUL V2 — GÉNÉRIQUE
 # ============================================================
-
+ 
 def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
                             largeur_facade_m=None, profondeur_parcelle_m=None,
                             forme_parcelle=None, est_route_specifique=False,
                             est_pap_nq=False, pap_nq_data=None, checklist=None,
                             parcelle_polygon_luref=None):
-
+ 
     r = regles
     rc = regles_communes or {}
     trace = []
     contraintes = []
-
+ 
     commune = r.get("commune", "Inconnue")
     code_zone = r.get("code_zone", "Inconnue")
     pap_qe = r.get("pap_qe", "")
-
+ 
     result = {
         "identification": {
             "commune": commune,
@@ -404,17 +453,17 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         "verdict": {},
         "trace": [],
     }
-
+ 
     # ── ÉTAPE 0 : Constructibilité ──
     trace.append("═══ ÉTAPE 0 — VÉRIFICATION CONSTRUCTIBILITÉ ═══")
-
+ 
     if code_zone in ZONES_NON_CONSTRUCTIBLES:
         trace.append(f"  Zone {code_zone} → NON CONSTRUCTIBLE (zone verte/agricole)")
         result["verdict"] = {"constructible": "Non", "potentiel": "Aucun",
                              "raison": f"Zone {code_zone} non constructible"}
         result["trace"] = trace
         return result
-
+ 
     constructible = str(r.get("constructible", "Non"))
     if "Non" in constructible and "limité" not in constructible.lower() and "faible" not in constructible.lower():
         trace.append(f"  Zone {code_zone} marquée non constructible")
@@ -422,12 +471,12 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
                              "raison": f"Zone {code_zone} non constructible"}
         result["trace"] = trace
         return result
-
+ 
     trace.append(f"  Zone: {code_zone} ({r.get('nom_zone', '')})")
     trace.append(f"  PAP QE: {pap_qe}")
     trace.append(f"  Type: {r.get('type_zone', 'N/A')}")
     trace.append(f"  → Constructible ✅")
-
+ 
     # Règles pour le rapport
     result["regles"] = {
         "nom_zone": r.get("nom_zone", ""),
@@ -445,23 +494,23 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         "css_max": r.get("css_max"),
         "dl_max": r.get("dl_max"),
     }
-
+ 
     # ── ÉTAPE 1 : Surface terrain net ──
     trace.append("")
     trace.append("═══ ÉTAPE 1 — SURFACE TERRAIN NET ═══")
     trace.append(f"  Surface terrain brute: {surface_terrain_m2} m²")
-
+ 
     surface_terrain_net = surface_terrain_m2
     if est_pap_nq:
         trace.append(f"  ⚠️ Zone PAP NQ — cession terrain possible (jusqu'à 25%)")
         trace.append(f"  Estimation conservatrice: 100% retenu (à vérifier)")
         contraintes.append("Zone PAP NQ: cession terrain possible jusqu'à 25%")
     trace.append(f"  → Surface terrain net: {surface_terrain_net} m²")
-
+ 
     # ── ÉTAPE 2 : Dimensions ──
     trace.append("")
     trace.append("═══ ÉTAPE 2 — DIMENSIONS DE LA PARCELLE ═══")
-
+ 
     # Phase 2 : si polygone fourni, on peut surclasser les dimensions scalaires avec l'OBB
     obb_info = None
     if parcelle_polygon_luref and len(parcelle_polygon_luref) >= 3:
@@ -476,7 +525,7 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
             if profondeur_parcelle_m is None:
                 profondeur_parcelle_m = obb_info["depth"]
                 trace.append(f"  → Profondeur parcelle retenue depuis OBB: {profondeur_parcelle_m:.1f} m")
-
+ 
     if largeur_facade_m and profondeur_parcelle_m:
         trace.append(f"  Largeur façade: {largeur_facade_m:.1f} m")
         trace.append(f"  Profondeur parcelle: {profondeur_parcelle_m:.1f} m")
@@ -488,20 +537,20 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         trace.append(f"  Largeur estimée: {largeur_facade_m:.1f} m")
         trace.append(f"  Profondeur estimée: {profondeur_parcelle_m:.1f} m")
         contraintes.append("Dimensions parcelle estimées (carré) — vérifier cadastre")
-
+ 
     # ── ÉTAPE 3 : Reculs ──
     trace.append("")
     trace.append("═══ ÉTAPE 3 — RECULS APPLICABLES ═══")
-
+ 
     recul_avant = r.get("recul_avant_min") or 0
     recul_lateral = r.get("recul_lateral_min") or 0
     recul_arriere = r.get("recul_arriere_hors_sol_min") or 0
     recul_arriere_ss = r.get("recul_arriere_sous_sol_min")
-
+ 
     if est_route_specifique:
         recul_avant_route = r.get("recul_avant_route_specifique")
         recul_lateral_route = r.get("recul_lateral_route_specifique")
-
+ 
         if recul_avant_route:
             trace.append(f"  📍 Route spécifique détectée")
             trace.append(f"  Recul avant: {recul_avant_route}")
@@ -510,7 +559,7 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
             if nums:
                 recul_avant = float(nums[0])
             contraintes.append(f"Recul avant route spécifique: {recul_avant_route}")
-
+ 
         if recul_lateral_route:
             trace.append(f"  Recul latéral: {recul_lateral_route}")
             h_corniche = r.get("h_corniche_max") or 11
@@ -521,7 +570,7 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         trace.append(f"  Recul avant: {recul_avant} m (min {recul_avant}, max {r.get('recul_avant_max', '-')} m)")
         trace.append(f"  Recul latéral: {recul_lateral} m")
         trace.append(f"  Recul arrière hors-sol: {recul_arriere} m")
-
+ 
     notes_reculs = str(r.get("notes_reculs", "")).lower()
     if "corniche/2" in notes_reculs and not est_route_specifique:
         h_corniche = r.get("h_corniche_max") or 10
@@ -532,36 +581,36 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         if recul_arriere and recul_calc > recul_arriere:
             recul_arriere = recul_calc
             trace.append(f"  Recul arrière (formule H/2): {recul_calc:.1f} m")
-
+ 
     if recul_arriere_ss:
         trace.append(f"  Recul arrière sous-sol: {recul_arriere_ss} m")
-
+ 
     # ── ÉTAPE 4 : Emprise au sol ──
     trace.append("")
     trace.append("═══ ÉTAPE 4 — EMPRISE AU SOL ═══")
-
+ 
     profondeur_utile = profondeur_parcelle_m - recul_avant - recul_arriere
     largeur_utile = largeur_facade_m - 2 * recul_lateral
-
+ 
     trace.append(f"  Méthode 1 — Par les reculs:")
     trace.append(f"    Profondeur utile: {profondeur_parcelle_m:.1f} - {recul_avant} (avant) - {recul_arriere} (arrière) = {profondeur_utile:.1f} m")
     trace.append(f"    Largeur utile: {largeur_facade_m:.1f} - 2×{recul_lateral} (latéral) = {largeur_utile:.1f} m")
-
+ 
     if profondeur_utile <= 0 or largeur_utile <= 0:
         trace.append(f"  ❌ Dimensions insuffisantes après reculs")
         result["verdict"] = {"constructible": "Non", "potentiel": "Aucun",
                              "raison": "Parcelle trop étroite/peu profonde pour les reculs"}
         result["trace"] = trace
         return result
-
+ 
     prof_max = r.get("profondeur_max_hors_sol")
     if prof_max and profondeur_utile > prof_max:
         trace.append(f"    Profondeur limitée par max: {prof_max} m")
         profondeur_utile = prof_max
-
+ 
     emprise_reculs = largeur_utile * profondeur_utile
     trace.append(f"    Emprise par reculs: {largeur_utile:.1f} × {profondeur_utile:.1f} = {emprise_reculs:.1f} m²")
-
+ 
     cos_max = r.get("cos_max")
     emprise_cos = None
     if cos_max:
@@ -569,7 +618,7 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         trace.append(f"  Méthode 2 — Par le COS:")
         trace.append(f"    COS max: {cos_max}")
         trace.append(f"    Emprise par COS: {surface_terrain_net} × {cos_max} = {emprise_cos:.1f} m²")
-
+ 
     if est_pap_nq and pap_nq_data:
         cos_nq = pap_nq_data.get("cos_max")
         if cos_nq:
@@ -579,14 +628,14 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
             if emprise_cos is None or emprise_cos_nq < emprise_cos:
                 emprise_cos = emprise_cos_nq
                 trace.append(f"    → COS PAP NQ plus restrictif, retenu")
-
+ 
     if emprise_cos and emprise_cos < emprise_reculs:
         emprise_au_sol = emprise_cos
         trace.append(f"  → Facteur limitant: COS → Emprise: {emprise_au_sol:.1f} m²")
     else:
         emprise_au_sol = emprise_reculs
         trace.append(f"  → Facteur limitant: Reculs → Emprise: {emprise_au_sol:.1f} m²")
-
+ 
     # Vérification CSS
     css_max = r.get("css_max")
     if css_max:
@@ -602,7 +651,7 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
             contraintes.append(f"CSS {css_max} limitant")
         else:
             trace.append(f"    ✅ CSS OK")
-
+ 
     # ─── Phase 2 : Calcul du polygone d'emprise géoréférencée ───
     emprise_polygon_luref = None
     if parcelle_polygon_luref and obb_info:
@@ -628,27 +677,27 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         elif emp and emp.get("warning"):
             trace.append(f"    ⚠️ {emp['warning']}")
             emprise_polygon_luref = emp
-
+ 
     # ── ÉTAPE 5 : SCB ──
     trace.append("")
     trace.append("═══ ÉTAPE 5 — SURFACE CONSTRUITE BRUTE (SCB) ═══")
-
+ 
     niveaux = r.get("niveaux_pleins_max") or 1
     combles = r.get("combles_retrait", False)
-
+ 
     scb_niveaux = emprise_au_sol * niveaux
     trace.append(f"  Niveaux pleins: {niveaux}")
     trace.append(f"  SCB niveaux pleins: {emprise_au_sol:.1f} × {niveaux} = {scb_niveaux:.1f} m²")
-
+ 
     scb_combles = emprise_au_sol * 0.60 if combles else 0
     if combles:
         trace.append(f"  Combles/retrait: ~60% emprise = {scb_combles:.1f} m²")
-
+ 
     scb_brute = scb_niveaux + scb_combles
     scb_totale = scb_brute * RATIO_CIRCULATIONS
     trace.append(f"  SCB brute: {scb_brute:.1f} m²")
     trace.append(f"  Déduction circulations ({int((1-RATIO_CIRCULATIONS)*100)}%): {scb_brute:.1f} × {RATIO_CIRCULATIONS} = {scb_totale:.1f} m²")
-
+ 
     if est_pap_nq and pap_nq_data:
         cus_nq = pap_nq_data.get("cus_max") or pap_nq_data.get("CUS_max")
         if cus_nq:
@@ -661,36 +710,36 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
                 contraintes.append(f"CUS PAP NQ {cus_nq} limitant")
             else:
                 trace.append(f"    ✅ CUS OK")
-
+ 
     # ── ÉTAPE 6 : Sous-sol ──
     trace.append("")
     trace.append("═══ ÉTAPE 6 — SOUS-SOL ═══")
-
+ 
     rec_arr_ss = recul_arriere_ss if recul_arriere_ss else recul_arriere
     prof_ss_max = r.get("profondeur_sous_sol_max")
     prof_ss = profondeur_parcelle_m - recul_avant - rec_arr_ss
     if prof_ss_max and prof_ss > prof_ss_max:
         prof_ss = prof_ss_max
     emprise_ss = largeur_utile * prof_ss if prof_ss > 0 else emprise_au_sol
-
+ 
     trace.append(f"  Recul arrière SS: {rec_arr_ss} m")
     if prof_ss_max:
         trace.append(f"  Profondeur max SS: {prof_ss_max} m")
     trace.append(f"  Profondeur SS possible: {prof_ss:.1f} m")
     trace.append(f"  Emprise SS estimée: {emprise_ss:.1f} m²")
-
+ 
     # ── ÉTAPE 7 : Programme ──
     trace.append("")
     trace.append("═══ ÉTAPE 7 — PROGRAMME LOGEMENTS ═══")
-
+ 
     type_zone = r.get("type_zone", "Habitation")
     logement_ok = "oui" in str(r.get("logement_autorise", "Non")).lower()
     commerce_ok = "oui" in str(r.get("commerce_autorise", "Non")).lower()
     min_scb_log_pct = r.get("min_scb_logement_pct")
-
+ 
     scb_commerce = 0
     scb_logement = scb_totale
-
+ 
     if type_zone == "Mixte" and commerce_ok:
         pct_log = (min_scb_log_pct or 50) / 100
         scb_commerce = emprise_au_sol * 0.80
@@ -707,15 +756,15 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         trace.append(f"  Zone non résidentielle — SCB activités: {scb_commerce:.1f} m²")
     else:
         trace.append(f"  Zone résidentielle — SCB logement: {scb_logement:.1f} m²")
-
+ 
     nb_logements = 0
     if logement_ok and scb_logement > 0:
         nb_log_brut = scb_logement / SCB_MOYENNE_PAR_LOGEMENT
         trace.append(f"  SCB moy/logement: {SCB_MOYENNE_PAR_LOGEMENT:.1f} m²")
         trace.append(f"  Nb logements brut: {scb_logement:.1f} / {SCB_MOYENNE_PAR_LOGEMENT:.1f} = {nb_log_brut:.1f}")
-
+ 
         nb_log = nb_log_brut
-
+ 
         dl_max = r.get("dl_max")
         if dl_max:
             nb_dl = (surface_terrain_m2 / 10000) * dl_max
@@ -724,7 +773,7 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
                 nb_log = nb_dl
                 trace.append(f"    ⚠️ Densité limitante")
                 contraintes.append(f"Densité max {dl_max} log/ha limitante")
-
+ 
         nb_max = r.get("nb_log_max_par_construction")
         if nb_max:
             try:
@@ -735,7 +784,7 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
                     trace.append(f"    ⚠️ Plafonné")
             except:
                 pass
-
+ 
         if est_pap_nq and pap_nq_data:
             dl_nq = pap_nq_data.get("dl_max") or pap_nq_data.get("DL_max_log_ha")
             if dl_nq:
@@ -744,15 +793,15 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
                 if nb_log > nb_nq:
                     nb_log = nb_nq
                     trace.append(f"    ⚠️ PAP NQ limitant")
-
+ 
         nb_logements = max(1, math.floor(nb_log))
-
+ 
     trace.append(f"  → Nombre de logements retenu: {nb_logements}")
-
+ 
     # ── ÉTAPE 8 : Mix ──
     trace.append("")
     trace.append("═══ ÉTAPE 8 — MIX LOGEMENTS ═══")
-
+ 
     mix_detail = {}
     if nb_logements <= 0:
         trace.append(f"  Pas de logement")
@@ -767,49 +816,49 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
             mix_detail["T2"]["nb"] += nb_logements - total_mix
         for t, d in mix_detail.items():
             trace.append(f"  {t}: {d['nb']} × {d['shn_m2']} m² SHN ({d['scb_m2']} m² SCB)")
-
+ 
     total_log = sum(d["nb"] for d in mix_detail.values())
     avg_shn = sum(d["shn_m2"] * d["nb"] for d in mix_detail.values()) / total_log if total_log > 0 else 0
     trace.append(f"  Moyenne SHN: {avg_shn:.1f} m² {'✅ ≥ 52m²' if avg_shn >= 52 else '⚠️ < 52m²'}")
     if avg_shn < 52 and total_log > 0:
         contraintes.append(f"Moyenne SHN {avg_shn:.0f}m² < 52m² réglementaire")
-
+ 
     # ── ÉTAPE 9 : Stationnement ──
     trace.append("")
     trace.append("═══ ÉTAPE 9 — STATIONNEMENT ═══")
-
+ 
     parkings = calculer_parkings(nb_logements, mix_detail, scb_commerce) if total_log > 0 else {"min": 0, "max": 0}
     if scb_commerce > 0 and total_log == 0:
         parkings = {"min": math.ceil(scb_commerce / 20), "max": math.ceil(scb_commerce / 20)}
     parkings_velo = calculer_parkings_velo(nb_logements, scb_commerce)
     surface_parking_ss = parkings["min"] * 25
-
+ 
     trace.append(f"  Parkings auto: {parkings['min']} à {parkings['max']} places")
     trace.append(f"  Parkings vélo: {parkings_velo} places")
     trace.append(f"  Surface parking SS (~25m²/place): {surface_parking_ss} m²")
-
+ 
     # ── ÉTAPE 10 : Contraintes ──
     trace.append("")
     trace.append("═══ ÉTAPE 10 — CONTRAINTES ═══")
-
+ 
     if css_max:
         trace.append(f"  CSS max: {css_max}")
-
+ 
     notes = r.get("notes_reculs", "")
     if notes:
         trace.append(f"  Notes reculs: {notes[:100]}...")
-
+ 
     if checklist:
         for item in checklist:
             statut = str(item.get("statut", ""))
             if "OUI" in statut:
                 trace.append(f"  ⚠️ {item.get('contrainte', '')}: CONCERNÉ")
                 contraintes.append(f"{item.get('contrainte', '')}: concerné")
-
+ 
     # ── ÉTAPE 11 : Synthèse ──
     trace.append("")
     trace.append("═══ ÉTAPE 11 — SYNTHÈSE ═══")
-
+ 
     niveaux_prog = f"R+{niveaux - 1}{'+C' if combles else ''}"
     if type_zone == "Mixte" and scb_commerce > 0:
         niveaux_prog = f"SS parking | RDC commerce | R+1 à R+{niveaux-1} logement"
@@ -819,9 +868,9 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         niveaux_prog = f"SS parking | RDC à R+{niveaux-1}"
         if combles:
             niveaux_prog += " + Combles"
-
+ 
     trace.append(f"  {niveaux_prog}")
-
+ 
     if nb_logements == 0 and type_zone in ["Activités", "Commercial", "Spéciale", "Loisirs"]:
         potentiel = "Moyen" if scb_totale > 500 else "Faible"
     elif nb_logements <= 2:
@@ -830,12 +879,12 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         potentiel = "Moyen"
     else:
         potentiel = "Fort"
-
+ 
     trace.append("")
     trace.append("═══ VERDICT ═══")
     trace.append(f"  Constructible: Oui | Potentiel: {potentiel}")
     trace.append(f"  Emprise: {emprise_au_sol:.1f} m² | SCB: {scb_totale:.1f} m² | Logements: {nb_logements}")
-
+ 
     result["programme"] = {
         "emprise_au_sol_m2": round(emprise_au_sol, 1),
         "scb_totale_m2": round(scb_totale, 1),
@@ -863,12 +912,12 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
     result["contraintes"] = contraintes
     result["trace"] = trace
     return result
-
-
+ 
+ 
 # ============================================================
 # ANCIEN MOTEUR V1 (rétrocompatibilité) — inchangé
 # ============================================================
-
+ 
 ZONES_V1 = {
     "Strassen": {
         "HAB-1": {"nom": "Zone d'habitation 1", "pap_qe": "QE1", "type": "Habitation", "constructible": True, "logement": True, "commerce": False, "h_corniche_max": 8.0, "h_faite_max": 12.0, "niveaux_pleins_max": 2, "combles_retrait": True, "niveaux_sous_sol_max": 1, "recul_avant_min": 3.0, "recul_avant_max": 6.0, "recul_lateral_min": 3.0, "recul_arriere_min": 10.0, "profondeur_max": 14.0, "cos_max": 0.35, "css_max": 0.60, "nb_log_max_par_construction": 2, "dl_max": None, "min_scb_logement_pct_qe": None, "construction_2e_position": False},
@@ -880,8 +929,8 @@ ZONES_V1 = {
         "COM": {"nom": "Zone commerciale", "pap_qe": "QE7", "type": "Commercial", "constructible": True, "logement": False, "commerce": True, "h_corniche_max": 13.0, "h_faite_max": 18.0, "niveaux_pleins_max": 3, "combles_retrait": True, "niveaux_sous_sol_max": None, "recul_avant_min": 7.0, "recul_lateral_min": 4.0, "recul_arriere_min": 4.0, "profondeur_max": None, "cos_max": None, "css_max": None, "nb_log_max_par_construction": 2, "dl_max": None, "construction_2e_position": True},
     }
 }
-
-
+ 
+ 
 def calculer_v1(req: CalculRequestV1) -> dict:
     """Ancien moteur pour rétrocompatibilité"""
     commune_zones = ZONES_V1.get(req.commune)
@@ -893,7 +942,7 @@ def calculer_v1(req: CalculRequestV1) -> dict:
         return {"regles": {}, "programme": {}, "contraintes": [],
                 "verdict": {"constructible": "Indéterminé", "potentiel": "Indéterminé",
                             "raison": f"Zone non référencée"}, "trace": []}
-
+ 
     zone = commune_zones[req.zone_pag]
     regles = {
         "commune": req.commune, "code_zone": req.zone_pag,
@@ -914,36 +963,36 @@ def calculer_v1(req: CalculRequestV1) -> dict:
         "nb_log_max_par_construction": zone.get("nb_log_max_par_construction"),
         "min_scb_logement_pct": zone.get("min_scb_logement_pct_qe"),
     }
-
+ 
     return calculer_faisabilite_v2(
         surface_terrain_m2=req.surface_terrain_m2,
         regles=regles,
         largeur_facade_m=req.largeur_facade_m,
         est_route_specifique=req.route_arlon,
     )
-
-
+ 
+ 
 # ============================================================
 # ENDPOINTS
 # ============================================================
-
+ 
 @app.get("/")
 def root():
     return {"service": "Feasibility.lu API", "version": "2.1.0",
             "endpoints": ["POST /calcul (v1 rétrocompat)", "POST /v2/calcul (v2 générique)"]}
-
-
+ 
+ 
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "2.1-emprise-polygon"}
-
-
+ 
+ 
 @app.post("/calcul")
 def calcul_v1(req: CalculRequestV1):
     """Endpoint V1 — rétrocompatible avec le workflow actuel"""
     return calculer_v1(req)
-
-
+ 
+ 
 @app.post("/v2/calcul")
 def calcul_v2(req: CalculRequestV2):
     """Endpoint V2 — générique, reçoit les règles depuis Airtable"""
