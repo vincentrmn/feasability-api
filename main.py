@@ -15,6 +15,17 @@ from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
 import math
 import json
+from pyproj import Transformer
+
+# Transformer WGS84 (EPSG:4326) → LUREF (EPSG:2169), réutilisé pour toutes les requêtes
+_WGS84_TO_LUREF = Transformer.from_crs("EPSG:4326", "EPSG:2169", always_xy=True)
+
+
+def wgs84_polygon_to_luref(polygon_wgs84):
+    """Convertit un polygone [[lon, lat], ...] WGS84 en [[x, y], ...] LUREF (EPSG:2169)."""
+    if not polygon_wgs84 or len(polygon_wgs84) < 3:
+        return None
+    return [list(_WGS84_TO_LUREF.transform(lon, lat)) for lon, lat in polygon_wgs84]
  
 app = FastAPI(
     title="Feasibility.lu API",
@@ -263,6 +274,13 @@ class CalculRequestV2(BaseModel):
         default=None,
         description="Polygone de la parcelle en EPSG:2169 (LUREF). Format: [[x,y], [x,y], ...]. "
                     "Si fourni, le moteur calcule emprise_polygon_luref via OBB+inset."
+
+     # Phase 2 bis — polygone WGS84 que le moteur convertira lui-même en LUREF
+    parcelle_polygon_wgs84: Optional[List[List[float]]] = Field(
+        default=None,
+        description="Polygone de la parcelle en WGS84 (EPSG:4326), format [[lon, lat], ...]. "
+                    "Si fourni et parcelle_polygon_luref absent, le moteur fait la conversion."
+   
     )
  
  
@@ -1012,5 +1030,5 @@ def calcul_v2(req: CalculRequestV2):
         est_pap_nq=req.est_pap_nq,
         pap_nq_data=req.pap_nq_data,
         checklist=req.checklist,
-        parcelle_polygon_luref=req.parcelle_polygon_luref,
+        parcelle_polygon_luref=req.parcelle_polygon_luref or wgs84_polygon_to_luref(req.parcelle_polygon_wgs84),
     )
