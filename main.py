@@ -287,7 +287,7 @@ class CalculRequestV2(BaseModel):
                     "Si fourni et parcelle_polygon_luref absent, le moteur fait la conversion."
    
     )
- 
+)
  
 # Ancien format pour rétrocompatibilité
 class CalculRequestV1(BaseModel):
