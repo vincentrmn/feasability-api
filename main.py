@@ -1011,7 +1011,12 @@ def root():
  
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "2.1-emprise-polygon"}
+    return {
+        "status": "ok",
+        "version": "2.2-pyproj-wgs84",
+        "pyproj_available": _PYPROJ_OK,
+        "pyproj_error": None if _PYPROJ_OK else _PYPROJ_ERROR,
+    }
  
  
 @app.post("/calcul")
