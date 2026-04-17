@@ -15,15 +15,20 @@ from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
 import math
 import json
-from pyproj import Transformer
-
-# Transformer WGS84 (EPSG:4326) → LUREF (EPSG:2169), réutilisé pour toutes les requêtes
-_WGS84_TO_LUREF = Transformer.from_crs("EPSG:4326", "EPSG:2169", always_xy=True)
+# Import défensif de pyproj : si absent, l'API démarre quand même
+try:
+    from pyproj import Transformer
+    _WGS84_TO_LUREF = Transformer.from_crs("EPSG:4326", "EPSG:2169", always_xy=True)
+    _PYPROJ_OK = True
+except Exception as _e:
+    _WGS84_TO_LUREF = None
+    _PYPROJ_OK = False
+    _PYPROJ_ERROR = str(_e)
 
 
 def wgs84_polygon_to_luref(polygon_wgs84):
     """Convertit un polygone [[lon, lat], ...] WGS84 en [[x, y], ...] LUREF (EPSG:2169)."""
-    if not polygon_wgs84 or len(polygon_wgs84) < 3:
+    if not polygon_wgs84 or len(polygon_wgs84) < 3 or not _PYPROJ_OK:
         return None
     return [list(_WGS84_TO_LUREF.transform(lon, lat)) for lon, lat in polygon_wgs84]
  
