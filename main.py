@@ -274,20 +274,8 @@ class CalculRequestV2(BaseModel):
     est_pap_nq: bool = False
     pap_nq_data: Optional[Dict[str, Any]] = None
     checklist: Optional[List[Dict[str, Any]]] = None
-    # Phase 2 — polygone réel de la parcelle pour le calcul d'emprise géoréférencée
-    parcelle_polygon_luref: Optional[List[List[float]]] = Field(
-        default=None,
-        description="Polygone de la parcelle en EPSG:2169 (LUREF). Format: [[x,y], [x,y], ...]. "
-                    "Si fourni, le moteur calcule emprise_polygon_luref via OBB+inset."
-
-     # Phase 2 bis — polygone WGS84 que le moteur convertira lui-même en LUREF
-    parcelle_polygon_wgs84: Optional[List[List[float]]] = Field(
-        default=None,
-        description="Polygone de la parcelle en WGS84 (EPSG:4326), format [[lon, lat], ...]. "
-                    "Si fourni et parcelle_polygon_luref absent, le moteur fait la conversion."
-   
-    )
-)
+    parcelle_polygon_luref: Optional[List[List[float]]] = None
+    parcelle_polygon_wgs84: Optional[List[List[float]]] = None
  
 # Ancien format pour rétrocompatibilité
 class CalculRequestV1(BaseModel):
