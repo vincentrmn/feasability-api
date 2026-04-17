@@ -5,7 +5,7 @@ Moteur GÉNÉRIQUE — les règles viennent d'Airtable via n8n
 V2.1 — Ajout emprise_polygon_luref:
   - Input optionnel `parcelle_polygon_luref` (polygone en EPSG:2169)
   - Calcul d'emprise polygonale via Oriented Bounding Box + inset des reculs
-  - Output `programme.emprise_polygon_luref` (4 coins géoréférencés) pour la 3D
+  - Output `programme.emprise_polygon_luref` (4 coins géoréférencés) pour la 3D 
   - 100% rétrocompatible : si pas de polygone fourni, comportement v2.0 inchangé
 """
  
