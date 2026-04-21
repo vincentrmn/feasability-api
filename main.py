@@ -35,7 +35,7 @@ def wgs84_polygon_to_luref(polygon_wgs84):
 app = FastAPI(
     title="Feasibility.lu API",
     description="Moteur de calcul de faisabilité immobilière — Luxembourg — V2 Générique",
-    version="2.2.0",
+    version="2.3.0",
 )
  
 app.add_middleware(
@@ -260,6 +260,242 @@ def compute_emprise_polygon(parcel_polygon, recul_avant, recul_lateral, recul_ar
  
  
 # ============================================================
+# v2.3 — DÉTECTION FAÇADE AVANT + EMPRISE ALIGNÉE SUR L'OBB
+# ============================================================
+
+def dist_point_segment_2d(px, py, ax, ay, bx, by):
+    """Distance d'un point (px, py) à un segment [a, b]."""
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    if L2 < 1e-9:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+    qx = ax + t * dx
+    qy = ay + t * dy
+    return math.hypot(px - qx, py - qy)
+
+
+def detect_facade_side_obb(obb_corners, point_geocode_luref):
+    """
+    Détermine de quel côté de l'OBB se trouve la façade avant.
+
+    L'OBB a 4 côtés : 2 "width" (petits côtés, candidats façade) et 2 "depth" (grands côtés, latéraux).
+    On compare la distance du point géocodé aux 2 côtés "width" opposés ; le plus proche est la façade avant.
+
+    Convention des coins OBB (tels que renvoyés par compute_oriented_bbox après reprojection) :
+        corner[0] = (-w/2, -d/2)
+        corner[1] = (+w/2, -d/2)   → côté [0,1] = width "bas" (y_local négatif)
+        corner[2] = (+w/2, +d/2)
+        corner[3] = (-w/2, +d/2)   → côté [2,3] = width "haut" (y_local positif)
+
+    Args:
+        obb_corners: list[[x, y]] — 4 coins de l'OBB dans le CRS LUREF
+        point_geocode_luref: [x, y] ou None
+
+    Returns:
+        dict avec :
+        - facade_side: "bottom" ou "top" — indique quel côté width est la façade
+        - distance_bottom_m: distance du point au côté [0,1]
+        - distance_top_m: distance du point au côté [2,3]
+        - methode: "geocode_proximity" ou "fallback"
+        Si point_geocode absent, on fait un fallback vers "bottom" (convention arbitraire
+        mais déterministe : c'est toujours le côté [0,1] qui sera "avant").
+    """
+    if not obb_corners or len(obb_corners) != 4:
+        return None
+
+    if not point_geocode_luref or len(point_geocode_luref) < 2:
+        return {
+            "facade_side": "bottom",
+            "distance_bottom_m": None,
+            "distance_top_m": None,
+            "methode": "fallback",
+        }
+
+    px, py = point_geocode_luref[0], point_geocode_luref[1]
+    c = obb_corners
+    d_bottom = dist_point_segment_2d(px, py, c[0][0], c[0][1], c[1][0], c[1][1])
+    d_top    = dist_point_segment_2d(px, py, c[2][0], c[2][1], c[3][0], c[3][1])
+    side = "bottom" if d_bottom <= d_top else "top"
+
+    return {
+        "facade_side": side,
+        "distance_bottom_m": round(d_bottom, 2),
+        "distance_top_m": round(d_top, 2),
+        "methode": "geocode_proximity",
+    }
+
+
+def compute_emprise_rectangle_aligne(obb_info, facade_side,
+                                      recul_avant_min, recul_avant_max,
+                                      recul_lateral, recul_arriere,
+                                      prof_max=None, recul_avant_cible=None):
+    """
+    Construit un rectangle d'emprise **dans le repère local de l'OBB**, puis le reprojete en LUREF.
+
+    Contrairement à l'ancienne compute_emprise_polygon qui centrait l'emprise sur l'OBB (reculs
+    symétriques avant/arrière), cette fonction :
+    - Applique recul_avant_cible depuis le côté façade (identifié par facade_side)
+    - Applique recul_arriere depuis le côté opposé
+    - Rognage profondeur max appliqué côté arrière (pas symétrique)
+
+    Convention OBB (héritée de compute_oriented_bbox) :
+        - repère local (u, v) tel que : u parallèle à width, v parallèle à depth
+        - corner[0] = (-w/2, -d/2), corner[1] = (+w/2, -d/2),
+          corner[2] = (+w/2, +d/2), corner[3] = (-w/2, +d/2)
+
+    Args:
+        obb_info: dict retourné par compute_oriented_bbox (center_x, center_y, width, depth, angle_rad)
+        facade_side: "bottom" ou "top" — de quel côté width se trouve la façade
+        recul_avant_min, recul_avant_max: bornes PAG du recul avant
+        recul_lateral, recul_arriere: floats
+        prof_max: float ou None
+        recul_avant_cible: float ou None — si None, on prend recul_avant_max ou recul_avant_min
+                           (convention : viser le max pour s'éloigner de la rue)
+
+    Returns:
+        dict avec :
+        - corners_luref: 4 coins emprise finale, ordre [avant-gauche, avant-droit, arrière-droit, arrière-gauche]
+        - rectangle_avant_rognage: {width_m, depth_m, area_m2, corners_luref}
+        - rognage_profondeur: {applique, cote, depth_avant_m, depth_apres_m, rogne_m, profondeur_max_regle_m}
+        - final: {width_m, depth_m, area_m2, corners_luref}
+        - recul_avant_cible_m: float utilisé
+        - facade_side: "bottom" ou "top"
+        - obb_width_m, obb_depth_m: copiés depuis obb_info
+        - warning: str ou None
+    """
+    if not obb_info:
+        return None
+
+    cx = obb_info["center_x"]
+    cy = obb_info["center_y"]
+    w = obb_info["width"]
+    d = obb_info["depth"]
+    angle = obb_info["angle_rad"]
+
+    # Convention recul_avant_cible : on vise le max du PAG s'il existe, sinon le min
+    if recul_avant_cible is None:
+        if recul_avant_max and recul_avant_max > 0:
+            recul_avant_cible = float(recul_avant_max)
+        else:
+            recul_avant_cible = float(recul_avant_min or 0)
+
+    rl = float(recul_lateral or 0)
+    rr = float(recul_arriere or 0)
+    rac = float(recul_avant_cible)
+
+    # Dans le repère local OBB :
+    # - côté "bottom" (y_local = -d/2) → si facade_side="bottom", v_dir=+1 (arrière vers y positif)
+    # - côté "top"    (y_local = +d/2) → si facade_side="top",    v_dir=-1 (arrière vers y négatif)
+    if facade_side == "top":
+        v_facade = +d / 2
+        v_dir = -1
+    else:  # "bottom" par défaut (inclus fallback)
+        v_facade = -d / 2
+        v_dir = +1
+
+    emprise_width = w - 2 * rl
+    prof_dispo = d - rac - rr  # profondeur disponible avant rognage prof_max
+    prof_max_val = float(prof_max) if prof_max else None
+
+    warning = None
+    if emprise_width <= 0:
+        warning = (
+            f"Parcelle trop étroite : OBB width {w:.1f} m, "
+            f"reculs latéraux 2×{rl} = {2*rl:.1f} m → emprise_width = {emprise_width:.1f} m."
+        )
+        return {
+            "corners_luref": None,
+            "warning": warning,
+            "final": None,
+            "facade_side": facade_side,
+            "recul_avant_cible_m": round(rac, 2),
+        }
+    if prof_dispo <= 0:
+        warning = (
+            f"Parcelle trop peu profonde : OBB depth {d:.1f} m, "
+            f"reculs avant_cible {rac} + arrière {rr} = {rac+rr:.1f} m → profondeur {prof_dispo:.1f} m."
+        )
+        return {
+            "corners_luref": None,
+            "warning": warning,
+            "final": None,
+            "facade_side": facade_side,
+            "recul_avant_cible_m": round(rac, 2),
+        }
+
+    rognage_applique = prof_max_val is not None and prof_dispo > prof_max_val
+    prof_finale = prof_max_val if rognage_applique else prof_dispo
+
+    hw_e = emprise_width / 2
+    v_front = v_facade + v_dir * rac
+    v_back_brut = v_facade + v_dir * (rac + prof_dispo)
+    v_back_final = v_facade + v_dir * (rac + prof_finale)
+
+    # Coins emprise dans le repère local
+    corners_local_brut = [
+        (-hw_e, v_front),      # avant-gauche
+        ( hw_e, v_front),      # avant-droit
+        ( hw_e, v_back_brut),  # arrière-droit
+        (-hw_e, v_back_brut),  # arrière-gauche
+    ]
+    corners_local_final = [
+        (-hw_e, v_front),
+        ( hw_e, v_front),
+        ( hw_e, v_back_final),
+        (-hw_e, v_back_final),
+    ]
+
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+
+    def local_to_luref(lu, lv):
+        x = cos_a * lu - sin_a * lv + cx
+        y = sin_a * lu + cos_a * lv + cy
+        return [round(x, 2), round(y, 2)]
+
+    corners_brut = [local_to_luref(*c) for c in corners_local_brut]
+    corners_final = [local_to_luref(*c) for c in corners_local_final]
+
+    return {
+        "corners_luref": corners_final,
+        "facade_side": facade_side,
+        "obb_width_m": round(w, 2),
+        "obb_depth_m": round(d, 2),
+        "rectangle_avant_rognage": {
+            "width_m": round(emprise_width, 2),
+            "depth_m": round(prof_dispo, 2),
+            "area_m2": round(emprise_width * prof_dispo, 1),
+            "corners_luref": corners_brut,
+        },
+        "rognage_profondeur": {
+            "applique": rognage_applique,
+            "cote": "arriere" if rognage_applique else None,
+            "depth_avant_m": round(prof_dispo, 2),
+            "depth_apres_m": round(prof_finale, 2),
+            "rogne_m": round(prof_dispo - prof_finale, 2),
+            "profondeur_max_regle_m": round(prof_max_val, 2) if prof_max_val else None,
+        },
+        "final": {
+            "width_m": round(emprise_width, 2),
+            "depth_m": round(prof_finale, 2),
+            "area_m2": round(emprise_width * prof_finale, 1),
+            "corners_luref": corners_final,
+        },
+        "recul_avant_cible_m": round(rac, 2),
+        "warning": warning,
+    }
+
+
+def wgs84_point_to_luref(point_wgs84):
+    """Convertit un point [lon, lat] WGS84 en [x, y] LUREF."""
+    if not point_wgs84 or len(point_wgs84) < 2 or not _PYPROJ_OK:
+        return None
+    x, y = _WGS84_TO_LUREF.transform(point_wgs84[0], point_wgs84[1])
+    return [x, y]
+ 
+ 
+# ============================================================
 # DATA MODELS
 # ============================================================
  
@@ -276,6 +512,9 @@ class CalculRequestV2(BaseModel):
     checklist: Optional[List[Dict[str, Any]]] = None
     parcelle_polygon_luref: Optional[List[List[float]]] = None
     parcelle_polygon_wgs84: Optional[List[List[float]]] = None
+    # v2.3 — point géocodé (facultatif) pour détecter la façade avant.
+    # Format : [lon, lat] WGS84, tel que renvoyé par le géocodeur Geoportail.
+    point_geocode_wgs84: Optional[List[float]] = None
  
 # Ancien format pour rétrocompatibilité
 class CalculRequestV1(BaseModel):
@@ -438,7 +677,8 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
                             largeur_facade_m=None, profondeur_parcelle_m=None,
                             forme_parcelle=None, est_route_specifique=False,
                             est_pap_nq=False, pap_nq_data=None, checklist=None,
-                            parcelle_polygon_luref=None):
+                            parcelle_polygon_luref=None,
+                            point_geocode_luref=None):
  
     r = regles
     rc = regles_communes or {}
@@ -663,128 +903,126 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
         else:
             trace.append(f"    ✅ CSS OK")
  
-    # ─── Phase 2 : Calcul du polygone d'emprise géoréférencée ───
+    # ─── Phase 2.3 : Calcul de l'emprise alignée sur la façade avant ───
+    # Architecture v2.3 : le moteur calcule tout (pas de RECUL_AVANT_CIBLE hardcodé côté JS).
+    # Étapes : détection côté façade via géocode → emprise rectangle aligné OBB → rognage arrière.
     emprise_polygon_luref = None
-    if parcelle_polygon_luref and obb_info:
-        trace.append(f"  📐 Calcul emprise polygonale (OBB+inset)")
-        emp = compute_emprise_polygon(
-            parcelle_polygon_luref,
-            recul_avant=recul_avant,
+    trace_architecte = None
+
+    if parcelle_polygon_luref and len(parcelle_polygon_luref) >= 3 and obb_info:
+        # --- 2.3.1 : Coins de l'OBB en LUREF (on les calcule une fois, utilisés partout) ---
+        obb_cx, obb_cy = obb_info["center_x"], obb_info["center_y"]
+        obb_w, obb_d = obb_info["width"], obb_info["depth"]
+        obb_ang = obb_info["angle_rad"]
+        hw_o, hd_o = obb_w / 2, obb_d / 2
+        cos_ao, sin_ao = math.cos(obb_ang), math.sin(obb_ang)
+        obb_corners_luref = []
+        for lx, ly in [(-hw_o, -hd_o), (hw_o, -hd_o), (hw_o, hd_o), (-hw_o, hd_o)]:
+            x = cos_ao * lx - sin_ao * ly + obb_cx
+            y = sin_ao * lx + cos_ao * ly + obb_cy
+            obb_corners_luref.append([round(x, 2), round(y, 2)])
+
+        # --- 2.3.2 : Détection côté façade avant (bottom/top) via point géocodé ---
+        facade_detect = detect_facade_side_obb(obb_corners_luref, point_geocode_luref)
+        facade_side = facade_detect["facade_side"] if facade_detect else "bottom"
+
+        trace.append(f"  🧭 Détection façade avant : côté OBB={facade_side} (méthode: {facade_detect['methode']})")
+        if facade_detect and facade_detect["methode"] == "geocode_proximity":
+            trace.append(f"    Distance point géocodé au côté bottom = {facade_detect['distance_bottom_m']} m, top = {facade_detect['distance_top_m']} m")
+
+        # --- 2.3.3 : Calcul emprise rectangle aligné sur OBB, avec reculs différenciés ---
+        trace.append(f"  📐 Calcul emprise alignée façade (reculs différenciés)")
+        recul_avant_min = r.get("recul_avant_min")
+        recul_avant_max = r.get("recul_avant_max")
+        emp_aligne = compute_emprise_rectangle_aligne(
+            obb_info=obb_info,
+            facade_side=facade_side,
+            recul_avant_min=recul_avant_min,
+            recul_avant_max=recul_avant_max,
             recul_lateral=recul_lateral,
             recul_arriere=recul_arriere,
             prof_max=prof_max,
         )
-        if emp and emp.get("corners"):
-            trace.append(f"    OBB parcelle: {emp['obb_width']}×{emp['obb_depth']} m")
-            trace.append(f"    Emprise bâtiment: {emp['emprise_width']}×{emp['emprise_depth']} m = {emp['area_m2']} m²")
-            trace.append(f"    4 coins LUREF calculés, orientation {math.degrees(emp['orientation_rad']):.1f}°")
-            # Si l'emprise polygonale est plus restrictive que l'emprise 1D, on la retient
-            if emp["area_m2"] < emprise_au_sol:
-                diff = emprise_au_sol - emp["area_m2"]
-                if diff > 1.0:
-                    trace.append(f"    ℹ️ Emprise polygonale plus restrictive : {emprise_au_sol:.1f} → {emp['area_m2']:.1f} m²")
-                    emprise_au_sol = emp["area_m2"]
-            emprise_polygon_luref = emp
-        elif emp and emp.get("warning"):
-            trace.append(f"    ⚠️ {emp['warning']}")
-            emprise_polygon_luref = emp
- 
-    # ─── Construction de `trace_architecte` (Flow Architecte 2D) ───
-    # Expose les variables intermédiaires DÉJÀ calculées par compute_oriented_bbox
-    # et compute_emprise_polygon, pour que le frontend puisse dessiner visuellement
-    # chaque étape (parcelle → OBB → reculs → emprise brute → rognage → emprise finale).
-    # Aucun recalcul, uniquement exposition.
-    trace_architecte = None
-    if parcelle_polygon_luref and len(parcelle_polygon_luref) >= 3:
+
+        if emp_aligne and emp_aligne.get("corners_luref"):
+            final = emp_aligne["final"]
+            trace.append(f"    OBB parcelle : {emp_aligne['obb_width_m']} × {emp_aligne['obb_depth_m']} m")
+            trace.append(f"    Recul avant cible appliqué : {emp_aligne['recul_avant_cible_m']} m (convention: max du PAG)")
+            trace.append(f"    Rectangle avant rognage : {emp_aligne['rectangle_avant_rognage']['width_m']} × {emp_aligne['rectangle_avant_rognage']['depth_m']} = {emp_aligne['rectangle_avant_rognage']['area_m2']} m²")
+            if emp_aligne["rognage_profondeur"]["applique"]:
+                rog = emp_aligne["rognage_profondeur"]
+                trace.append(f"    Rognage profondeur max ({rog['profondeur_max_regle_m']} m) côté {rog['cote']} : {rog['depth_avant_m']} → {rog['depth_apres_m']} m (-{rog['rogne_m']} m)")
+            trace.append(f"    Emprise finale : {final['width_m']} × {final['depth_m']} = {final['area_m2']} m²")
+            # Si l'emprise 2D est plus restrictive que l'emprise 1D (par reculs/COS), on l'adopte
+            if final["area_m2"] < emprise_au_sol and (emprise_au_sol - final["area_m2"]) > 1.0:
+                trace.append(f"    ℹ️ Emprise 2D plus restrictive : {emprise_au_sol:.1f} → {final['area_m2']} m²")
+                emprise_au_sol = final["area_m2"]
+            # emprise_polygon_luref remplit le contrat du frontend 3D : il reçoit des coins prêts à afficher
+            emprise_polygon_luref = {
+                "corners": final["corners_luref"],
+                "area_m2": final["area_m2"],
+                "width_m": final["width_m"],
+                "depth_m": final["depth_m"],
+                "method": "obb_aligned_facade",  # v2.3 : remplace "obb_inset" de la v2.2
+                "facade_side": facade_side,
+                "warning": None,
+            }
+        elif emp_aligne and emp_aligne.get("warning"):
+            trace.append(f"    ⚠️ {emp_aligne['warning']}")
+            emprise_polygon_luref = {
+                "corners": None,
+                "method": "obb_aligned_facade",
+                "facade_side": facade_side,
+                "warning": emp_aligne["warning"],
+            }
+
+        # --- 2.3.4 : Construction de trace_architecte enrichie pour le Flow 2D ---
         surf_parcelle = polygon_area_2d(parcelle_polygon_luref)
         xs_p = [p[0] for p in parcelle_polygon_luref]
         ys_p = [p[1] for p in parcelle_polygon_luref]
-        parcelle_bbox = {
-            "min": [round(min(xs_p), 2), round(min(ys_p), 2)],
-            "max": [round(max(xs_p), 2), round(max(ys_p), 2)],
+
+        obb_block = {
+            "center_luref": [round(obb_cx, 2), round(obb_cy, 2)],
+            "width_m": round(obb_w, 2),
+            "depth_m": round(obb_d, 2),
+            "angle_rad": round(obb_ang, 4),
+            "angle_deg": round(math.degrees(obb_ang), 2),
+            "corners_luref": obb_corners_luref,
         }
 
-        obb_block = None
-        if obb_info:
-            obb_cx, obb_cy = obb_info["center_x"], obb_info["center_y"]
-            obb_w, obb_d = obb_info["width"], obb_info["depth"]
-            obb_ang = obb_info["angle_rad"]
-            half_w_o, half_d_o = obb_w / 2, obb_d / 2
-            obb_corners_local = [
-                (-half_w_o, -half_d_o),
-                ( half_w_o, -half_d_o),
-                ( half_w_o,  half_d_o),
-                (-half_w_o,  half_d_o),
-            ]
-            cos_a_obb, sin_a_obb = math.cos(obb_ang), math.sin(obb_ang)
-            obb_corners_luref = []
-            for lx, ly in obb_corners_local:
-                x = cos_a_obb * lx - sin_a_obb * ly + obb_cx
-                y = sin_a_obb * lx + cos_a_obb * ly + obb_cy
-                obb_corners_luref.append([round(x, 2), round(y, 2)])
-            obb_block = {
-                "center_luref": [round(obb_cx, 2), round(obb_cy, 2)],
-                "width_m": round(obb_w, 2),
-                "depth_m": round(obb_d, 2),
-                "angle_rad": round(obb_ang, 4),
-                "angle_deg": round(math.degrees(obb_ang), 2),
-                "corners_luref": obb_corners_luref,
-            }
+        facade_block = {
+            "methode": facade_detect["methode"] if facade_detect else "fallback",
+            "facade_side": facade_side,  # "bottom" (côté [0,1] OBB) ou "top" (côté [2,3] OBB)
+            "distance_bottom_m": facade_detect.get("distance_bottom_m") if facade_detect else None,
+            "distance_top_m": facade_detect.get("distance_top_m") if facade_detect else None,
+            "point_geocode_luref": [round(point_geocode_luref[0], 2), round(point_geocode_luref[1], 2)] if point_geocode_luref else None,
+        }
 
         reculs_block = {
-            "avant_m": round(float(recul_avant), 2) if recul_avant else 0.0,
+            "avant_min_m": round(float(recul_avant_min), 2) if recul_avant_min else None,
+            "avant_max_m": round(float(recul_avant_max), 2) if recul_avant_max else None,
+            "avant_cible_m": emp_aligne["recul_avant_cible_m"] if emp_aligne else None,
             "lateral_m": round(float(recul_lateral), 2) if recul_lateral else 0.0,
             "arriere_m": round(float(recul_arriere), 2) if recul_arriere else 0.0,
             "profondeur_max_m": round(float(prof_max), 2) if prof_max else None,
             "source_regles": f"PAG {code_zone} {commune}",
             "pap_qe": pap_qe or None,
-            # Note : le backend n'a pas accès à la géométrie des routes 3D — c'est
-            # le frontend qui détecte la façade avant par proximité aux routes.
-            "facade_avant": {
-                "detection": "frontend_routes_proximity",
-                "edge_index": None,
-                "longueur_m": None,
-            },
         }
 
         emprise_block = None
-        if obb_info:
-            ra_eff = float(recul_avant) if recul_avant else 0.0
-            rl_eff = float(recul_lateral) if recul_lateral else 0.0
-            rr_eff = float(recul_arriere) if recul_arriere else 0.0
-            brute_w = obb_info["width"] - 2 * rl_eff
-            brute_d = obb_info["depth"] - ra_eff - rr_eff
-            prof_max_val = float(prof_max) if prof_max else None
-            rognage_applique = (
-                prof_max_val is not None
-                and brute_d > 0
-                and brute_d > prof_max_val
-            )
-            final_d = prof_max_val if rognage_applique else brute_d
-            final_w = brute_w
-            final_corners = None
-            if emprise_polygon_luref and emprise_polygon_luref.get("corners"):
-                final_corners = emprise_polygon_luref["corners"]
+        if emp_aligne and emp_aligne.get("corners_luref"):
             emprise_block = {
-                "avant_rognage": {
-                    "width_m": round(brute_w, 2),
-                    "depth_m": round(brute_d, 2),
-                    "area_m2": round(max(0, brute_w) * max(0, brute_d), 1),
-                },
-                "rognage_profondeur": {
-                    "applique": rognage_applique,
-                    "depth_avant_m": round(brute_d, 2),
-                    "depth_apres_m": round(final_d, 2) if final_d is not None else None,
-                    "rogne_m": round(brute_d - final_d, 2) if (rognage_applique and final_d is not None) else 0.0,
-                    "profondeur_max_regle_m": round(prof_max_val, 2) if prof_max_val is not None else None,
-                },
-                "final": {
-                    "width_m": round(final_w, 2),
-                    "depth_m": round(final_d, 2) if final_d is not None else None,
-                    "area_m2": round(max(0, final_w) * max(0, final_d or 0), 1),
-                    "corners_luref": final_corners,
-                },
-                "warning": emprise_polygon_luref.get("warning") if emprise_polygon_luref else None,
+                "rectangle_avant_rognage": emp_aligne["rectangle_avant_rognage"],
+                "rognage_profondeur": emp_aligne["rognage_profondeur"],
+                "final": emp_aligne["final"],
+                "warning": emp_aligne.get("warning"),
+            }
+        elif emp_aligne and emp_aligne.get("warning"):
+            emprise_block = {
+                "rectangle_avant_rognage": None,
+                "rognage_profondeur": None,
+                "final": None,
+                "warning": emp_aligne["warning"],
             }
 
         trace_architecte = {
@@ -793,9 +1031,13 @@ def calculer_faisabilite_v2(surface_terrain_m2, regles, regles_communes=None,
                 "surface_m2": round(surf_parcelle, 1),
                 "nb_sommets": len(parcelle_polygon_luref),
                 "sommets_luref": [[round(p[0], 2), round(p[1], 2)] for p in parcelle_polygon_luref],
-                "bbox_luref": parcelle_bbox,
+                "bbox_luref": {
+                    "min": [round(min(xs_p), 2), round(min(ys_p), 2)],
+                    "max": [round(max(xs_p), 2), round(max(ys_p), 2)],
+                },
             },
             "obb": obb_block,
+            "facade_avant": facade_block,
             "reculs_appliques": reculs_block,
             "emprise_calcul": emprise_block,
         }
@@ -1106,7 +1348,7 @@ def calculer_v1(req: CalculRequestV1) -> dict:
  
 @app.get("/")
 def root():
-    return {"service": "Feasibility.lu API", "version": "2.2.0",
+    return {"service": "Feasibility.lu API", "version": "2.3.0",
             "endpoints": ["POST /calcul (v1 rétrocompat)", "POST /v2/calcul (v2 générique)"]}
  
  
@@ -1114,7 +1356,7 @@ def root():
 def health():
     return {
         "status": "ok",
-        "version": "2.2.0-trace-architecte",
+        "version": "2.3.0-facade-aligned",
         "pyproj_available": _PYPROJ_OK,
         "pyproj_error": None if _PYPROJ_OK else _PYPROJ_ERROR,
     }
@@ -1142,4 +1384,5 @@ def calcul_v2(req: CalculRequestV2):
         pap_nq_data=req.pap_nq_data,
         checklist=req.checklist,
         parcelle_polygon_luref=req.parcelle_polygon_luref or wgs84_polygon_to_luref(req.parcelle_polygon_wgs84),
+        point_geocode_luref=wgs84_point_to_luref(req.point_geocode_wgs84),
     )
