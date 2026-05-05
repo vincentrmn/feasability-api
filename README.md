@@ -46,29 +46,40 @@ C'est le cœur. Chaque étape ajoute du texte à `trace[]` (utile pour debug et 
 10. **Contraintes** — checklist optionnelle (zones inondables, etc.).
 11. **Synthèse / Verdict** — Faible / Moyen / Fort.
 
-## 5. Connexions externes
+## 5. Place de l'API dans le produit
+
+Cette API n'est **pas le produit** : c'est un maillon dans un workflow n8n plus large, qui démarre par un formulaire et finit par un mail. Documenté dans [DEPLOY.md](DEPLOY.md) §4.
 
 ```
-                 ┌─────────────┐
-                 │  n8n (?)    │  workflow d'orchestration
-                 └──────┬──────┘
-                        │ POST /v2/calcul
-                        ▼
-   ┌──────────────────────────────────────┐
-   │     Feasibility API (ce fichier)     │
-   └──────────────────────────────────────┘
-       ▲                              ▲
-       │ règles PAG (champs)          │ point géocodé WGS84
-       │                              │ + polygone parcelle
-   ┌───┴────────┐              ┌─────┴────────────┐
-   │  Airtable  │              │  Geoportail.lu   │
-   │ Zones_PAG  │              │  (cadastre/géoc.)│
-   └────────────┘              └──────────────────┘
+[Tally Webhook]                                ← formulaire utilisateur
+    ↓
+[Nominatim Geocoding]                          ← adresse → lat/lon
+    ↓
+[Geoportail.lu — Parcelle]  →  [Geoportail.lu — Zone PAG]
+    ↓                                  ↓
+        [n8n — Assembler données géo]
+                  ↓
+        [HTTP Request → Feasibility API]       ← ce repo
+                  ↓
+        [Préparer données rapport]
+                  ↓
+        [Claude API → Rédiger rapport]         ← LLM met en forme
+                  ↓
+        [Gmail → Envoyer rapport au client]
 ```
 
-- **Airtable** → format de la doctrine attendu via `regles_zone` dans le body. Le code [main.py:530-640](main.py#L530-L640) sait extraire les champs `singleSelect` Airtable (`{id, name, color}`) et tolère les valeurs textuelles ("2 par construction", "libre", "H corniche/2 (min 4m)", etc.). Les noms de champs côté Airtable sont en dur.
-- **n8n** : mentionné en docstring ligne 3 mais **pas appelé depuis ce fichier** — c'est probablement n8n qui orchestre Airtable → API.
-- **Geoportail Luxembourg** : pas appelé directement non plus. Le client (probablement le front Terravalu) fournit `parcelle_polygon_wgs84` et `point_geocode_wgs84` que l'API reprojette en LUREF avec `pyproj`.
+Conséquences pratiques :
+
+- **n8n est l'orchestrateur** : c'est lui qui appelle Airtable (pour les règles PAG), Geoportail (pour la parcelle/zone), puis cette API, puis Claude pour rédiger le rapport, puis Gmail. L'API elle-même ne parle à personne — elle reçoit du JSON et renvoie du JSON.
+- **Le "client" de l'API n'est donc pas un navigateur** mais un node *HTTP Request* n8n. Ça explique l'absence d'auth et le CORS `*`.
+- **L'utilisateur final ne voit jamais le JSON** : le `trace[]` et la structure `result` servent à *Claude* qui rédige le rapport humain. C'est pour ça que les traces sont aussi verbeuses et lisibles : elles sont conçues pour qu'un LLM raconte l'histoire.
+- **Il n'y a pas (encore) de site web** : pour l'instant le déclencheur est un formulaire Tally et le livrable est un email. Le passage à une vraie web app sera donc un changement d'architecture, pas juste un branchement front sur une API existante.
+
+### Détail des connexions
+
+- **Airtable** → règles PAG passées via `regles_zone` dans le body. [main.py:530-640](main.py#L530-L640) extrait les champs `singleSelect` (`{id, name, color}`) et tolère les valeurs textuelles ("2 par construction", "libre", "H corniche/2 (min 4m)", etc.). Les noms de champs Airtable sont **codés en dur** côté Python.
+- **Geoportail.lu** → fournit le polygone cadastral et le point géocodé. L'API reçoit ces données via `parcelle_polygon_wgs84` / `point_geocode_wgs84` et les reprojette en LUREF avec `pyproj`.
+- **Claude API** → consomme la sortie JSON de l'API pour rédiger le rapport final. Le prompt système est dans [DEPLOY.md](DEPLOY.md) §3.
 - **Aucune base de données**, aucun cache, aucune auth. Stateless.
 
 ## 6. Endpoints exposés
@@ -99,3 +110,6 @@ C'est le cœur. Chaque étape ajoute du texte à `trace[]` (utile pour debug et 
 - L'import de `pyproj` est entouré de try/except ([main.py:18-26](main.py#L18-L26)) : si `pyproj` n'est pas dispo, l'API démarre quand même mais les fonctionnalités géométriques v2.3 sont désactivées silencieusement. Vérifier `/health` pour voir l'état.
 - Les fonctions `parse_float` / `parse_niveaux` ([main.py:549-582](main.py#L549-L582)) font des regex sur des chaînes textuelles fournies par Airtable. **Très fragile** : si un humain change un libellé dans Airtable, le calcul peut casser ou donner un résultat faux silencieusement.
 - L'algorithme d'emprise en v2.3 documente lui-même ses **hypothèses** (parcelles en L mal gérées, orientation rue approximée) — voir docstring [main.py:151-186](main.py#L151-L186). C'est honnête mais ça veut dire que les résultats sont approximatifs sur certaines parcelles.
+
+### Documentation existante à reprendre
+- [DEPLOY.md](DEPLOY.md) date d'avant la v2 : il ne documente que `/calcul` (legacy, données Strassen hardcodées), liste des routes qui n'existent plus (`/communes`, `/zones/{commune}`), et explique encore qu'on ajoute une commune en éditant `ZONES` dans `main.py` — alors qu'aujourd'hui les règles viennent d'Airtable. Toute la partie géométrique LUREF / OBB / point géocodé (v2.1 → v2.3) est absente. **À réécrire** une fois la v2 stabilisée.
