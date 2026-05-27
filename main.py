@@ -527,7 +527,7 @@ class CalculRequestV1(BaseModel):
     adresse: Optional[str] = None
     num_cadastral: Optional[str] = None
  
- class PalladioRequest(BaseModel):
+class PalladioRequest(BaseModel):
     """Input pour POST /palladio/calcul - Sprint 1 enveloppe seule."""
  
     parcel_geometry_wgs84: Dict[str, Any] = Field(
