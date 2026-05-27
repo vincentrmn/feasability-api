@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
+from palladio_engine import calculer_emprise_palladio, PalladioError
 import math
 import json
 # Import défensif de pyproj : si absent, l'API démarre quand même
@@ -526,7 +527,27 @@ class CalculRequestV1(BaseModel):
     adresse: Optional[str] = None
     num_cadastral: Optional[str] = None
  
+ class PalladioRequest(BaseModel):
+    """Input pour POST /palladio/calcul - Sprint 1 enveloppe seule."""
  
+    parcel_geometry_wgs84: Dict[str, Any] = Field(
+        ...,
+        description="GeoJSON Polygon en WGS84. Ex: {'type': 'Polygon', 'coordinates': [[[lon, lat], ...]]}",
+    )
+    point_geocode_wgs84: List[float] = Field(
+        ...,
+        description="[lon, lat] WGS84 du point geocode, sert a identifier la voirie",
+        min_length=2,
+        max_length=2,
+    )
+    recul_avant_m: float = Field(..., ge=0, description="Recul avant en metres")
+    recul_lateral_m: float = Field(..., ge=0, description="Recul lateral en metres")
+    recul_arriere_m: float = Field(..., ge=0, description="Recul arriere en metres")
+    profondeur_max_m: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Profondeur max totale depuis voirie (recul_avant + prof_max)",
+    )
 # ============================================================
 # MAPPING AIRTABLE → MOTEUR
 # ============================================================
@@ -1348,8 +1369,16 @@ def calculer_v1(req: CalculRequestV1) -> dict:
  
 @app.get("/")
 def root():
-    return {"service": "Feasibility.lu API", "version": "2.3.0",
-            "endpoints": ["POST /calcul (v1 rétrocompat)", "POST /v2/calcul (v2 générique)"]}
+    return {
+        "service": "Feasibility.lu API",
+        "version": "2.3.0",
+        "palladio_version": "0.1",
+        "endpoints": [
+            "POST /calcul          (v1 retrocompat)",
+            "POST /v2/calcul       (v2 generique - moteur OBB)",
+            "POST /palladio/calcul (Palladio v0.1 - enveloppe N-coins)",
+        ],
+    }
  
  
 @app.get("/health")
@@ -1386,3 +1415,26 @@ def calcul_v2(req: CalculRequestV2):
         parcelle_polygon_luref=req.parcelle_polygon_luref or wgs84_polygon_to_luref(req.parcelle_polygon_wgs84),
         point_geocode_luref=wgs84_point_to_luref(req.point_geocode_wgs84),
     )
+@app.post("/palladio/calcul")
+def calcul_palladio(req: PalladioRequest):
+    """
+    Sprint 1 Palladio - enveloppe constructible 2D pure.
+ 
+    Pas de SCB, pas de logements, pas de parkings : juste le polygone N-coins
+    et sa surface. Le reste vient au Sprint 2 (recycle depuis la chaine v2.3).
+ 
+    Retourne 400 si parcelle invalide ou reculs incompatibles.
+    """
+    try:
+        result = calculer_emprise_palladio(
+            parcel_geometry_wgs84=req.parcel_geometry_wgs84,
+            point_geocode_wgs84=req.point_geocode_wgs84,
+            recul_avant_m=req.recul_avant_m,
+            recul_lateral_m=req.recul_lateral_m,
+            recul_arriere_m=req.recul_arriere_m,
+            profondeur_max_m=req.profondeur_max_m,
+        )
+        return result
+    except PalladioError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=str(e))
