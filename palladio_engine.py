@@ -1,29 +1,39 @@
 """
-PALLADIO ENGINE v0.1
+PALLADIO ENGINE v0.2
 ====================
 
-Moteur d'enveloppe constructible 2D. Sprint 1 de la nouvelle generation Terravalu.
+Moteur d'enveloppe constructible 2D. Sprint 1.5 livre la detection voirie par
+adjacence cadastrale (collection 359 Geoportail).
 
 Strategie : remplacer a terme le moteur v2.3 (OBB + reculs alignes) qui deborde
 sur parcelles obliques. Palladio s'aligne sur la geometrie cadastrale reelle
 (buffer Shapely + half-planes), garanti zero debordement.
 
-Hors perimetre Sprint 1 :
+Hors perimetre Sprint 1.5 :
   - SCB, hauteurs, niveaux, logements, parkings (Sprint 2, recycle depuis main.py)
   - 3D, GLB, TopoExport (mis de cote)
   - Servitudes, biotopes, zones inondables (Sprint 3)
 
-Input principal : polygone parcelle WGS84 + point geocode + reculs depuis Airtable.
-Output principal : polygone enveloppe N-coins en LUREF + WGS84 + surface m2.
+Input principal : polygone parcelle WGS84 + point geocode + reculs + (NEW) parcelle_id.
+Output principal : polygone enveloppe N-coins LUREF + WGS84 + surface m2
+                   + classification des aretes (voirie/interne).
 
 Portage depuis :
-  - algo_v4.py (compute_enveloppe_v4, half_plane_interior, find_limite_voirie, scoring fond)
+  - algo_v4.py (compute_enveloppe_v4, half_plane_interior, scoring fond)
   - algo_v5.py (idem v4 avec profondeur max + traces)
+  - Prototype Sprint 1.5 (detect_voirie_by_adjacency, validation 4 cas reels)
 
-Valide sur 3 parcelles reelles (briefing v5 24/04/2026) :
-  - 5 Tilleuls Strassen (133/2970) : 366 m2 attendu
-  - 7 Tilleuls Strassen (133/2971) : 327 m2 attendu
-  - 11 Tilleuls Strassen (133/2973) : 259 m2 attendu
+Valide sur 4 parcelles reelles (Sprint 1.5, 01/06/2026) :
+  - 5 Tilleuls Strassen (133/2970) : voirie BC (~5m, via vide cadastral)
+  - 7 Tilleuls Strassen (133/2971) : voirie AB (~10m, via vide cadastral)
+  - Parcelle d'angle 100/2949 Strassen : 9 aretes voirie (cas multi-faces)
+  - 29/2523 Rue P. Federspiel Strassen : voirie CD (~14.7m, via voisin public 5038)
+
+Regle de detection voirie :
+    Une arete est VOIRIE si :
+      - pas de parcelle voisine au sondage perpendiculaire a 3m, OU
+      - le voisin sonde a k_code_nature dans PUBLIC_NATURES = {5038, 5043}
+        (5038 = espace public cadastre, 5043 = vide cadastral domaine public)
 """
 
 import math
@@ -41,6 +51,36 @@ except Exception as _e:
     _T_LUREF_TO_WGS84 = None
     _PYPROJ_OK = False
     _PYPROJ_ERROR = str(_e)
+
+try:
+    import requests
+    _REQUESTS_OK = True
+except Exception as _e:
+    _REQUESTS_OK = False
+    _REQUESTS_ERROR = str(_e)
+
+
+# ============================================================
+# CONSTANTES SPRINT 1.5 - DETECTION VOIRIE CADASTRALE
+# ============================================================
+
+# Codes cadastraux Luxembourg consideres comme espace public
+# 5038 = espace public cadastre (placette, trottoir, esplanade)
+# 5043 = vide cadastral domaine public (chaussee cadastree comme parcelle)
+PUBLIC_NATURES = {5038, 5043}
+
+# Distance de sondage perpendiculaire a chaque arete (metres LUREF)
+PROBE_DISTANCE_M = 3.0
+
+# Marge bbox pour la requete Geoportail collection 359 (en degres WGS84)
+# ~ 0.001 deg = environ 75 m a 49 deg N en longitude, 110 m en latitude
+BBOX_MARGIN_DEG = 0.001
+
+# Endpoint OGC Features Geoportail collection 359 (parcelles cadastrales)
+GEOPORTAIL_359_URL = "https://features.geoportail.lu/collections/359/items"
+
+# Timeout HTTP pour la requete voisines (secondes)
+NEIGHBORS_HTTP_TIMEOUT_S = 8
 
 
 # ============================================================
@@ -86,6 +126,22 @@ def _close_ring(ring: List[List[float]]) -> List[List[float]]:
     return ring
 
 
+def _bbox_from_ring_wgs84(ring: List[List[float]]) -> Tuple[float, float, float, float]:
+    """Retourne (min_lon, min_lat, max_lon, max_lat) en WGS84."""
+    lons = [c[0] for c in ring]
+    lats = [c[1] for c in ring]
+    return (min(lons), min(lats), max(lons), max(lats))
+
+
+def _pad_bbox(bbox: Tuple[float, float, float, float], margin_deg: float
+              ) -> Tuple[float, float, float, float]:
+    """Elargit la bbox de margin_deg dans les quatre directions."""
+    return (
+        bbox[0] - margin_deg, bbox[1] - margin_deg,
+        bbox[2] + margin_deg, bbox[3] + margin_deg,
+    )
+
+
 # ============================================================
 # HELPERS GEOMETRIQUES (porte tel quel de algo_v4)
 # ============================================================
@@ -95,6 +151,7 @@ def find_limite_voirie(pts: List[List[float]], voirie_point: List[float]) -> int
     Identifie l'arete de la parcelle la plus proche du point geocode.
     Heuristique simple, sous-optimale sur parcelles allongees (cf. 11 Tilleuls),
     mais l'enveloppe reste legale meme si l'orientation est sous-optimale.
+    Conserve comme fallback Sprint 1.5 si la detection cadastrale echoue.
     Retourne l'index de l'arete [pts[i], pts[i+1]].
     """
     n = len(pts)
@@ -119,6 +176,25 @@ def edge_inward_normal(pts: List[List[float]], idx: int, centroid: Tuple[float, 
     if nx * (centroid[0] - mid[0]) + ny * (centroid[1] - mid[1]) < 0:
         nx, ny = -nx, -ny
     return nx, ny
+
+
+def edge_outward_normal_from_polygon(p1: List[float], p2: List[float],
+                                       polygon: Polygon) -> Tuple[float, float]:
+    """
+    Normale unitaire pointant vers l'EXTERIEUR de la parcelle pour l'arete [p1, p2].
+    Utilise pour le sondage des voisines.
+    """
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    L = math.hypot(dx, dy)
+    if L < 1e-9:
+        return (0.0, 0.0)
+    n1 = (-dy / L, dx / L)
+    n2 = (dy / L, -dx / L)
+    mid = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
+    c = polygon.centroid
+    d1 = math.hypot(mid[0] + n1[0] - c.x, mid[1] + n1[1] - c.y)
+    d2 = math.hypot(mid[0] + n2[0] - c.x, mid[1] + n2[1] - c.y)
+    return n1 if d1 > d2 else n2
 
 
 def edge_direction(pts: List[List[float]], idx: int) -> Tuple[float, float]:
@@ -194,6 +270,197 @@ def half_plane_interior(a: List[float], b: List[float], distance: float,
 
 
 # ============================================================
+# SPRINT 1.5 - DETECTION VOIRIE PAR ADJACENCE CADASTRALE
+# ============================================================
+
+def fetch_neighbors_359(bbox_wgs84: Tuple[float, float, float, float],
+                         exclude_id: Optional[str] = None,
+                         timeout: int = NEIGHBORS_HTTP_TIMEOUT_S
+                         ) -> List[Dict[str, Any]]:
+    """
+    Recupere les parcelles voisines via Geoportail OGC Features collection 359.
+
+    Args:
+        bbox_wgs84 : (min_lon, min_lat, max_lon, max_lat) en WGS84
+        exclude_id : ID de la parcelle cible a exclure du retour
+        timeout : timeout HTTP en secondes
+
+    Returns:
+        Liste de dicts avec id, k_code_nature, poly_luref (Shapely Polygon en LUREF).
+        Retour vide en cas d'echec (fallback safe : on bascule sur geocode_proximity).
+    """
+    if not _REQUESTS_OK:
+        print(f"[palladio voirie] WARN requests indisponible : {_REQUESTS_ERROR}")
+        return []
+
+    params = {
+        "bbox": f"{bbox_wgs84[0]},{bbox_wgs84[1]},{bbox_wgs84[2]},{bbox_wgs84[3]}",
+        "bbox-crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84",
+        "f": "json",
+        "limit": 400,
+    }
+    try:
+        r = requests.get(GEOPORTAIL_359_URL, params=params, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        print(f"[palladio voirie] WARN fetch 359 a echoue : {e}")
+        return []
+
+    voisines = []
+    for feat in data.get("features", []):
+        if exclude_id and feat.get("id") == exclude_id:
+            continue
+        try:
+            coords_wgs = feat["geometry"]["coordinates"][0]
+            coords_lu = wgs84_ring_to_luref(coords_wgs)
+            poly = Polygon(coords_lu)
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+                if poly.is_empty or not hasattr(poly, 'exterior'):
+                    continue
+            voisines.append({
+                "id": feat["id"],
+                "k_code_nature": feat["properties"].get("k_code_nature"),
+                "poly_luref": poly,
+            })
+        except Exception:
+            continue
+    return voisines
+
+
+def detect_voirie_by_adjacency(parcelle_poly_luref: Polygon,
+                                voisines: List[Dict[str, Any]],
+                                probe_dist: float = PROBE_DISTANCE_M
+                                ) -> List[Dict[str, Any]]:
+    """
+    Classifie chaque arete de la parcelle : voirie ou interne, par sondage cadastral.
+
+    Pour chaque arete :
+      1. Calculer la normale sortante (perpendiculaire vers l'exterieur)
+      2. Sonder un point a `probe_dist` metres dans la direction normale sortante
+      3. Tester si ce point tombe dans une parcelle voisine
+
+    Regle :
+      Arete VOIRIE si :
+        - aucune voisine ne contient le point sonde, OU
+        - la voisine qui contient le point sonde a k_code_nature dans PUBLIC_NATURES
+      Arete INTERNE sinon (mitoyennete privee)
+
+    Args:
+        parcelle_poly_luref : Polygon Shapely de la parcelle cible en LUREF
+        voisines : liste issue de fetch_neighbors_359
+        probe_dist : distance de sondage en metres (defaut 3.0)
+
+    Returns:
+        Liste de dicts (une entree par arete) avec :
+            idx, label, p1, p2, length_m, mid, normal, probe_point,
+            voisin_id, voisin_nature, is_voirie, motif
+    """
+    coords = list(parcelle_poly_luref.exterior.coords)[:-1]
+    n = len(coords)
+    edges = []
+
+    for i in range(n):
+        p1, p2 = list(coords[i]), list(coords[(i + 1) % n])
+        length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        mid = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2]
+        normal = edge_outward_normal_from_polygon(p1, p2, parcelle_poly_luref)
+        probe = [mid[0] + normal[0] * probe_dist, mid[1] + normal[1] * probe_dist]
+        probe_pt = Point(probe)
+
+        voisin_match = None
+        for v in voisines:
+            if v["poly_luref"].contains(probe_pt):
+                voisin_match = v
+                break
+
+        if voisin_match is None:
+            is_voirie = True
+            motif = "voirie via vide cadastral (aucune voisine au sondage)"
+            voisin_id, voisin_nature = None, None
+        else:
+            voisin_id = voisin_match["id"]
+            voisin_nature = voisin_match["k_code_nature"]
+            if voisin_nature in PUBLIC_NATURES:
+                is_voirie = True
+                motif = f"voirie via voisin public (k_nature={voisin_nature})"
+            else:
+                is_voirie = False
+                motif = f"interne via voisin prive (k_nature={voisin_nature})"
+
+        edges.append({
+            "idx": i,
+            "label": f"{chr(65 + i)}{chr(65 + (i + 1) % n)}",
+            "p1": [round(p1[0], 2), round(p1[1], 2)],
+            "p2": [round(p2[0], 2), round(p2[1], 2)],
+            "length_m": round(length, 2),
+            "mid": [round(mid[0], 2), round(mid[1], 2)],
+            "normal": [round(normal[0], 4), round(normal[1], 4)],
+            "probe_point": [round(probe[0], 2), round(probe[1], 2)],
+            "voisin_id": voisin_id,
+            "voisin_nature": voisin_nature,
+            "is_voirie": is_voirie,
+            "motif": motif,
+        })
+
+    return edges
+
+
+def select_voirie_edge_from_classification(edges_classified: List[Dict[str, Any]],
+                                             point_geocode_luref: Optional[List[float]] = None
+                                             ) -> Dict[str, Any]:
+    """
+    Selectionne l'arete voirie principale parmi les aretes classifiees.
+
+    Strategie :
+      1. Filtrer les aretes is_voirie=True
+      2. Si 0 arete voirie : fallback "arete la plus proche du geocode"
+      3. Si 1 arete : retourner directement
+      4. Si N aretes (parcelle d'angle ou multi-segments) :
+         - Si point_geocode_luref fourni : prendre la plus proche du geocode
+         - Sinon : prendre la plus longue
+
+    Returns:
+        dict avec selected_idx, all_voirie_edges (liste idx), fallback_used (str|None)
+    """
+    voirie_edges = [e for e in edges_classified if e["is_voirie"]]
+    fallback_used = None
+
+    if len(voirie_edges) == 0:
+        fallback_used = "no_voirie_found_geocode_proximity"
+        if point_geocode_luref is None:
+            return {"selected_idx": 0, "all_voirie_edges": [], "fallback_used": fallback_used}
+        best_idx, best_d = 0, float("inf")
+        for e in edges_classified:
+            d = math.hypot(e["mid"][0] - point_geocode_luref[0],
+                           e["mid"][1] - point_geocode_luref[1])
+            if d < best_d:
+                best_d, best_idx = d, e["idx"]
+        return {"selected_idx": best_idx, "all_voirie_edges": [], "fallback_used": fallback_used}
+
+    if len(voirie_edges) == 1:
+        return {
+            "selected_idx": voirie_edges[0]["idx"],
+            "all_voirie_edges": [e["idx"] for e in voirie_edges],
+            "fallback_used": None,
+        }
+
+    if point_geocode_luref is not None:
+        best = min(voirie_edges, key=lambda e: math.hypot(
+            e["mid"][0] - point_geocode_luref[0],
+            e["mid"][1] - point_geocode_luref[1]))
+    else:
+        best = max(voirie_edges, key=lambda e: e["length_m"])
+
+    return {
+        "selected_idx": best["idx"],
+        "all_voirie_edges": [e["idx"] for e in voirie_edges],
+        "fallback_used": None,
+    }
+
+
+# ============================================================
 # CALCUL ENVELOPPE (porte de algo_v4.compute_enveloppe_v4)
 # ============================================================
 
@@ -203,7 +470,7 @@ def _compute_enveloppe_unique(pts: List[List[float]], idx_voirie: int, idx_fond:
     """
     Calcule l'enveloppe pour une combinaison (voirie, fond) donnee.
     Pipeline :
-      1. buffer(-rl) latera uniforme (mitre, gere les coins)
+      1. buffer(-rl) lateral uniforme (mitre, gere les coins)
       2. intersection demi-plan recul avant
       3. intersection demi-plan recul arriere
       4. (option) clip a distance <= ra + prof_max de la voirie
@@ -276,14 +543,12 @@ def _polygon_to_corners(geom) -> Optional[List[List[float]]]:
     if geom is None or geom.is_empty:
         return None
     if geom.geom_type == 'MultiPolygon':
-        # Prendre le polygone le plus grand
         geom = max(geom.geoms, key=lambda g: g.area)
     if not hasattr(geom, 'exterior'):
         return None
     coords = list(geom.exterior.coords)
     if len(coords) < 4:
         return None
-    # Drop closing point (GeoJSON-like, on retourne ouvert puis on fermera au serialize)
     if coords[0] == coords[-1]:
         coords = coords[:-1]
     return [[round(p[0], 3), round(p[1], 3)] for p in coords]
@@ -306,6 +571,7 @@ def calculer_emprise_palladio(
     recul_arriere_m: float,
     profondeur_max_m: Optional[float] = None,
     top_k_fond: int = 3,
+    parcelle_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Calcule l'enveloppe constructible 2D d'une parcelle cadastrale.
@@ -313,28 +579,28 @@ def calculer_emprise_palladio(
     Args:
         parcel_geometry_wgs84 : GeoJSON Polygon en WGS84 (lon, lat).
             Ex : {"type": "Polygon", "coordinates": [[[lon, lat], ...]]}
-        point_geocode_wgs84 : [lon, lat] WGS84, identifie la voirie.
+        point_geocode_wgs84 : [lon, lat] WGS84, identifie la voirie (fallback).
         recul_avant_m : distance min depuis l'arete voirie (en metres).
         recul_lateral_m : distance min depuis les aretes laterales.
         recul_arriere_m : distance min depuis l'arete fond.
         profondeur_max_m : optionnel, profondeur max totale depuis voirie
             (NB : recul_avant + profondeur_max_m mesures depuis la voirie).
         top_k_fond : nombre de candidats arete-fond a tester.
+        parcelle_id : (NEW Sprint 1.5) ID cadastral pour activer la detection
+            voirie par adjacence cadastrale. Si None, fallback sur geocode_proximity.
 
     Returns:
-        dict prêt a JSONifier avec :
+        dict pret a JSONifier avec :
         - meta : version, methode
-        - parcelle : geometrie en LUREF + WGS84, surface cadastrale, nb sommets
-        - voirie : idx arete + label + methode detection
-        - fond : idx + label + score + candidats top-k (avec surface chacune)
+        - parcelle : geometrie LUREF + WGS84, surface cadastrale, nb sommets
+        - voirie : idx + label + methode detection + (Sprint 1.5) detection complete
+        - fond : idx + label + score + candidats top-k
         - reculs_appliques : ce qui a ete utilise
-        - emprise : geometry GeoJSON LUREF + WGS84, surface m2, nb sommets,
-                    ratio vs COS theorique si fourni
-        - traces_reculs : liste des reculs par arete pour debug Jour 3
+        - emprise : geometry GeoJSON LUREF + WGS84, surface m2, nb sommets, ratio
+        - traces_reculs : liste des reculs par arete pour debug
 
     Raises:
-        PalladioError : input invalide (polygone < 3 sommets, reculs negatifs,
-                        enveloppe degeneree).
+        PalladioError : input invalide ou enveloppe degeneree
     """
     # ---- Validation inputs ----
     if not _PYPROJ_OK:
@@ -364,8 +630,16 @@ def calculer_emprise_palladio(
     surface_cadastrale_m2 = parcel_poly_luref.area
     n_sommets = len(pts_luref)
 
-    # ---- Detection voirie ----
-    idx_voirie = find_limite_voirie(pts_luref, pt_geo_luref)
+    # ---- Detection voirie : Sprint 1.5 (cadastral) + fallback geocode ----
+    voirie_detection = _detect_voirie_with_fallback(
+        parcel_poly_luref=parcel_poly_luref,
+        pts_luref=pts_luref,
+        ring_wgs=ring_wgs,
+        pt_geo_luref=pt_geo_luref,
+        parcelle_id=parcelle_id,
+    )
+    idx_voirie = voirie_detection["selected_idx"]
+    voirie_method = voirie_detection["method"]
 
     # ---- Calcul enveloppe pour les top-k candidats fond ----
     cands = candidates_fond(pts_luref, idx_voirie, top_k=top_k_fond)
@@ -402,9 +676,6 @@ def calculer_emprise_palladio(
         )
 
     ratio_vs_cadastrale = best_area / surface_cadastrale_m2 if surface_cadastrale_m2 > 0 else 0
-    if ratio_vs_cadastrale < 0.10:
-        # Pas une erreur : on previent juste, on n'echoue pas (briefing : "complexe / archi" Sprint 4+)
-        pass
 
     # ---- Extraction coins emprise + reprojection WGS84 ----
     corners_luref = _polygon_to_corners(best_env)
@@ -419,8 +690,8 @@ def calculer_emprise_palladio(
     return {
         "meta": {
             "engine": "palladio",
-            "version": "0.1",
-            "method": "shapely_buffer_halfplanes_v5",
+            "version": "0.2",
+            "method": "shapely_buffer_halfplanes_v5_with_cadastral_voirie",
         },
         "parcelle": {
             "geometry_luref": {
@@ -430,12 +701,14 @@ def calculer_emprise_palladio(
             "geometry_wgs84": parcel_geometry_wgs84,
             "surface_cadastrale_m2": round(surface_cadastrale_m2, 1),
             "nb_sommets": n_sommets,
+            "id": parcelle_id,
         },
         "voirie": {
             "idx": idx_voirie,
             "edge_label": idx_voirie_label,
-            "method": "geocode_proximity",
+            "method": voirie_method,
             "point_luref": [round(pt_geo_luref[0], 2), round(pt_geo_luref[1], 2)],
+            "detection": voirie_detection,
         },
         "fond": {
             "idx": best_idx_fond,
@@ -463,3 +736,85 @@ def calculer_emprise_palladio(
         },
         "traces_reculs": best_traces,
     }
+
+
+def _detect_voirie_with_fallback(parcel_poly_luref: Polygon,
+                                   pts_luref: List[List[float]],
+                                   ring_wgs: List[List[float]],
+                                   pt_geo_luref: List[float],
+                                   parcelle_id: Optional[str]) -> Dict[str, Any]:
+    """
+    Wrapper de detection voirie avec fallback gracieux.
+
+    Hierarchie :
+      1. Si parcelle_id fourni : tenter detection cadastrale (Sprint 1.5)
+         - Si succes (voisines fetched et au moins une classification reussie) : OK
+         - Sinon : fallback geocode_proximity
+      2. Si parcelle_id absent : geocode_proximity direct (mode legacy)
+
+    Returns:
+        dict avec selected_idx, method, edges_classified, all_voirie_edges,
+        fallback_used, n_neighbors_fetched, n_neighbors_public
+    """
+    # Mode legacy : pas de parcelle_id
+    if not parcelle_id:
+        idx = find_limite_voirie(pts_luref, pt_geo_luref)
+        return {
+            "selected_idx": idx,
+            "method": "geocode_proximity",
+            "edges_classified": [],
+            "all_voirie_edges": [],
+            "fallback_used": "no_parcelle_id_provided",
+            "n_neighbors_fetched": 0,
+            "n_neighbors_public": 0,
+        }
+
+    # Mode Sprint 1.5 : detection cadastrale
+    try:
+        bbox_wgs = _bbox_from_ring_wgs84(ring_wgs)
+        bbox_padded = _pad_bbox(bbox_wgs, BBOX_MARGIN_DEG)
+        voisines = fetch_neighbors_359(bbox_padded, exclude_id=parcelle_id)
+
+        if not voisines:
+            # API indisponible ou bbox vide : fallback geocode
+            idx = find_limite_voirie(pts_luref, pt_geo_luref)
+            return {
+                "selected_idx": idx,
+                "method": "geocode_proximity_fallback",
+                "edges_classified": [],
+                "all_voirie_edges": [],
+                "fallback_used": "no_neighbors_fetched",
+                "n_neighbors_fetched": 0,
+                "n_neighbors_public": 0,
+            }
+
+        edges_classified = detect_voirie_by_adjacency(parcel_poly_luref, voisines)
+        selection = select_voirie_edge_from_classification(
+            edges_classified, point_geocode_luref=pt_geo_luref
+        )
+        n_public = sum(1 for v in voisines if v["k_code_nature"] in PUBLIC_NATURES)
+
+        return {
+            "selected_idx": selection["selected_idx"],
+            "method": "cadastral_adjacency_v0.2"
+                if selection["fallback_used"] is None else "cadastral_adjacency_with_fallback",
+            "edges_classified": edges_classified,
+            "all_voirie_edges": selection["all_voirie_edges"],
+            "fallback_used": selection["fallback_used"],
+            "n_neighbors_fetched": len(voisines),
+            "n_neighbors_public": n_public,
+        }
+
+    except Exception as e:
+        # Toute exception dans la detection cadastrale : fallback robuste
+        print(f"[palladio voirie] WARN detection cadastrale a echoue, fallback geocode : {e}")
+        idx = find_limite_voirie(pts_luref, pt_geo_luref)
+        return {
+            "selected_idx": idx,
+            "method": "geocode_proximity_fallback",
+            "edges_classified": [],
+            "all_voirie_edges": [],
+            "fallback_used": f"detection_error: {type(e).__name__}",
+            "n_neighbors_fetched": 0,
+            "n_neighbors_public": 0,
+        }
