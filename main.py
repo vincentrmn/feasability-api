@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
-from palladio_engine import calculer_emprise_palladio, PalladioError
+from palladio_engine import calculer_emprise_palladio, calculer_palladio_full, PalladioError
 import math
 import json
 # Import défensif de pyproj : si absent, l'API démarre quand même
@@ -547,6 +547,27 @@ class PalladioRequest(BaseModel):
         default=None,
         ge=0,
         description="Profondeur max totale depuis voirie (recul_avant + prof_max)",
+    )
+    parcelle_id: Optional[str] = Field(
+        default=None,
+        description="ID cadastral Geoportail (ex: 114B00133002970). Active la detection "
+                    "voirie par adjacence cadastrale (Sprint 1.5). Si absent : geocode_proximity.",
+    )
+
+
+class PalladioFullRequest(PalladioRequest):
+    """Input pour POST /palladio/calcul/full - Sprint 2 (enveloppe + metier)."""
+
+    zone_pag: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Regles PAG mappees depuis Airtable : niveaux_pleins_max, "
+                    "combles_retrait, type_zone, logement_autorise, commerce_autorise, "
+                    "cus_max, min_scb_logement_pct, dl_max, nb_log_max_par_construction.",
+    )
+    corriger_hab1: bool = Field(
+        default=False,
+        description="Si True, corrige le bug HAB-1 (comptage logements base SCB coherente). "
+                    "Defaut False = fidele main.py v2.3 (parite).",
     )
 # ============================================================
 # MAPPING AIRTABLE → MOTEUR
@@ -1372,11 +1393,12 @@ def root():
     return {
         "service": "Feasibility.lu API",
         "version": "2.3.0",
-        "palladio_version": "0.1",
+        "palladio_version": "0.3",
         "endpoints": [
-            "POST /calcul          (v1 retrocompat)",
-            "POST /v2/calcul       (v2 generique - moteur OBB)",
-            "POST /palladio/calcul (Palladio v0.1 - enveloppe N-coins)",
+            "POST /calcul               (v1 retrocompat)",
+            "POST /v2/calcul            (v2 generique - moteur OBB)",
+            "POST /palladio/calcul      (Palladio v0.2 - enveloppe + voirie cadastrale)",
+            "POST /palladio/calcul/full (Palladio v0.3 - enveloppe + SCB + logements + parkings + warnings)",
         ],
     }
  
@@ -1433,8 +1455,35 @@ def calcul_palladio(req: PalladioRequest):
             recul_lateral_m=req.recul_lateral_m,
             recul_arriere_m=req.recul_arriere_m,
             profondeur_max_m=req.profondeur_max_m,
+            parcelle_id=req.parcelle_id,
         )
         return result
+    except PalladioError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/palladio/calcul/full")
+def calcul_palladio_full(req: PalladioFullRequest):
+    """
+    Sprint 2 Palladio - enveloppe + metier complet.
+
+    Enveloppe (Sprint 1/1.5) + SCB + logements + parkings + type construction
+    + warnings. Ne leve PAS 400 sur enveloppe degeneree : retourne une reponse
+    structuree avec warning ENVELOPPE_VIDE. Tolere zone_pag absente.
+    """
+    try:
+        return calculer_palladio_full(
+            parcel_geometry_wgs84=req.parcel_geometry_wgs84,
+            point_geocode_wgs84=req.point_geocode_wgs84,
+            recul_avant_m=req.recul_avant_m,
+            recul_lateral_m=req.recul_lateral_m,
+            recul_arriere_m=req.recul_arriere_m,
+            zone_pag=req.zone_pag,
+            profondeur_max_m=req.profondeur_max_m,
+            parcelle_id=req.parcelle_id,
+            corriger_hab1=req.corriger_hab1,
+        )
     except PalladioError as e:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=str(e))

@@ -84,6 +84,38 @@ NEIGHBORS_HTTP_TIMEOUT_S = 8
 
 
 # ============================================================
+# CONSTANTES SPRINT 2 - SCB / LOGEMENTS / PARKINGS / TYPE / WARNINGS
+# ============================================================
+# Portees telles quelles depuis main.py v2.3 (non-regression visee < 5%).
+
+# Surface habitable nette ~ 80% de la SCB (murs, gaines, circulations)
+RATIO_SCB_TO_SH = 0.80
+
+# Part de l'emprise au sol comptee en combles/retrait amenageable
+COMBLES_RATIO = 0.60
+
+# Mix logements standard (memes valeurs que main.py v2.3)
+MIX_STANDARD = {
+    "T1_studio": {"pct": 0.20, "shn_m2": 35, "scb_m2": 44},
+    "T2":        {"pct": 0.35, "shn_m2": 52, "scb_m2": 65},
+    "T3":        {"pct": 0.30, "shn_m2": 70, "scb_m2": 88},
+    "T4+":       {"pct": 0.15, "shn_m2": 90, "scb_m2": 113},
+}
+# Moyenne SCB ponderee par logement (~74.9 m2 SCB)
+SCB_MOYENNE_PAR_LOGEMENT = sum(t["scb_m2"] * t["pct"] for t in MIX_STANDARD.values())
+# Moyenne SHN ponderee (~59.7 m2 SHN) - utile pour la variante HAB-1 corrigee
+SHN_MOYENNE_PAR_LOGEMENT = sum(t["shn_m2"] * t["pct"] for t in MIX_STANDARD.values())
+
+# Codes cadastraux residentiels prives (mitoyennete potentielle laterale)
+RESIDENTIAL_NATURES = {5024, 5025}
+
+# Seuils warnings (metres)
+FACADE_RUE_COURTE_SEUIL_M = 8.0
+PARCELLE_QUASI_ENCLAVEE_SEUIL_M = 5.0
+PROFONDEUR_MARGE_M = 6.0  # marge mini au-dela de recul_avant + recul_arriere
+
+
+# ============================================================
 # REPROJECTION HELPERS (WGS84 <-> LUREF)
 # ============================================================
 
@@ -818,3 +850,560 @@ def _detect_voirie_with_fallback(parcel_poly_luref: Polygon,
             "n_neighbors_fetched": 0,
             "n_neighbors_public": 0,
         }
+
+
+# ============================================================
+# SPRINT 2 - SCB (Surface Construite Brute)
+# ============================================================
+
+def calculate_scb(emprise_au_sol_m2: float,
+                  zone_pag: Dict[str, Any],
+                  surface_terrain_net_m2: Optional[float] = None) -> Dict[str, Any]:
+    """
+    Calcule la Surface Construite Brute a partir de l'emprise au sol Palladio.
+
+    Porte de main.py v2.3 (etape 5). L'emprise au sol = surface de l'enveloppe
+    constructible calculee par calculer_emprise_palladio (et non un rectangle OBB).
+
+    Args:
+        emprise_au_sol_m2 : surface de l'enveloppe 2D (m2)
+        zone_pag : regles PAG mappees (niveaux_pleins_max, combles_retrait,
+            cus_max/CUS_max optionnel)
+        surface_terrain_net_m2 : pour le plafond CUS (defaut = None, pas de cap)
+
+    Returns:
+        dict avec scb_totale_m2, surface_habitable_m2, ventilation par niveau,
+        cus_applique. surface_habitable est calculee AVANT le cap CUS (fidele
+        a main.py : la SH sert au comptage logements et n'est pas re-rognee).
+    """
+    niveaux = int(zone_pag.get("niveaux_pleins_max") or 1)
+    combles = bool(zone_pag.get("combles_retrait", False))
+
+    scb_niveaux = emprise_au_sol_m2 * niveaux
+    scb_combles = emprise_au_sol_m2 * COMBLES_RATIO if combles else 0.0
+    scb_totale = scb_niveaux + scb_combles
+
+    # SH calculee avant cap CUS (fidele main.py)
+    surface_habitable = scb_totale * RATIO_SCB_TO_SH
+
+    # Ventilation par niveau
+    ventilation = [{"niveau": "RDC", "scb_m2": round(emprise_au_sol_m2, 1)}]
+    for k in range(1, niveaux):
+        ventilation.append({"niveau": f"R+{k}", "scb_m2": round(emprise_au_sol_m2, 1)})
+    if combles:
+        ventilation.append({"niveau": "Combles/retrait", "scb_m2": round(scb_combles, 1)})
+
+    # Plafond CUS (PAP NQ ou zone)
+    cus_applique = None
+    cus_max = zone_pag.get("cus_max") or zone_pag.get("CUS_max")
+    if cus_max and surface_terrain_net_m2:
+        try:
+            scb_max_cus = surface_terrain_net_m2 * float(cus_max)
+            limitant = scb_totale > scb_max_cus
+            if limitant:
+                scb_totale = scb_max_cus
+            cus_applique = {
+                "cus_max": float(cus_max),
+                "scb_max_cus_m2": round(scb_max_cus, 1),
+                "limitant": limitant,
+            }
+        except (ValueError, TypeError):
+            cus_applique = None
+
+    return {
+        "emprise_au_sol_m2": round(emprise_au_sol_m2, 1),
+        "niveaux_pleins": niveaux,
+        "combles": combles,
+        "scb_niveaux_m2": round(scb_niveaux, 1),
+        "scb_combles_m2": round(scb_combles, 1),
+        "scb_totale_m2": round(scb_totale, 1),
+        "surface_habitable_m2": round(surface_habitable, 1),
+        "ventilation_par_niveau": ventilation,
+        "cus_applique": cus_applique,
+    }
+
+
+# ============================================================
+# SPRINT 2 - LOGEMENTS THEORIQUES
+# ============================================================
+
+def calculate_logements(scb_totale_m2: float,
+                        surface_habitable_m2: float,
+                        emprise_au_sol_m2: float,
+                        zone_pag: Dict[str, Any],
+                        surface_terrain_m2: float,
+                        corriger_hab1: bool = False) -> Dict[str, Any]:
+    """
+    Estime le nombre de logements theoriques et le mix typologique.
+
+    Porte de main.py v2.3 (etapes 7-8).
+
+    BUG HAB-1 (connu, documente) :
+        main.py ligne 1150 fait `nb_log_brut = sh_logement / SCB_MOYENNE_PAR_LOGEMENT`,
+        soit une surface HABITABLE divisee par une moyenne SCB (~74.9). Mismatch
+        d'unite : sous-compte d'environ 20% par rapport a une base SCB coherente.
+        - corriger_hab1=False (defaut) : reproduit main.py a l'identique (parite).
+        - corriger_hab1=True : `nb = scb_logement / SCB_MOYENNE_PAR_LOGEMENT`
+          (tout en base SCB, coherent). A activer apres validation Vincent.
+
+    Returns:
+        dict avec nb_logements, mix_detail, surface_moyenne_shn_m2,
+        scb_logement_m2, scb_commerce_m2, contraintes, hab1.
+    """
+    type_zone = zone_pag.get("type_zone", "Habitation")
+    logement_ok = "oui" in str(zone_pag.get("logement_autorise", "Non")).lower()
+    commerce_ok = "oui" in str(zone_pag.get("commerce_autorise", "Non")).lower()
+    min_scb_log_pct = zone_pag.get("min_scb_logement_pct")
+
+    contraintes: List[str] = []
+    scb_commerce = 0.0
+    scb_logement = scb_totale_m2
+    sh_logement = surface_habitable_m2
+
+    if type_zone == "Mixte" and commerce_ok:
+        pct_log = (min_scb_log_pct or 50) / 100
+        scb_commerce = emprise_au_sol_m2 * 0.80
+        scb_logement = scb_totale_m2 - scb_commerce
+        if scb_logement < scb_totale_m2 * pct_log:
+            scb_logement = scb_totale_m2 * pct_log
+            scb_commerce = scb_totale_m2 - scb_logement
+        sh_logement = scb_logement * RATIO_SCB_TO_SH
+    elif not logement_ok:
+        scb_logement = 0.0
+        scb_commerce = scb_totale_m2
+        sh_logement = 0.0
+
+    nb_logements = 0
+    if logement_ok and sh_logement > 0:
+        if corriger_hab1:
+            nb_log = scb_logement / SCB_MOYENNE_PAR_LOGEMENT
+        else:
+            # Fidele main.py v2.3 (HAB-1)
+            nb_log = sh_logement / SCB_MOYENNE_PAR_LOGEMENT
+
+        # Plafond densite (log/ha)
+        dl_max = zone_pag.get("dl_max")
+        if dl_max:
+            try:
+                nb_dl = (surface_terrain_m2 / 10000) * float(dl_max)
+                if nb_log > nb_dl:
+                    nb_log = nb_dl
+                    contraintes.append(f"Densite max {dl_max} log/ha limitante")
+            except (ValueError, TypeError):
+                pass
+
+        # Plafond par construction
+        nb_max = zone_pag.get("nb_log_max_par_construction")
+        if nb_max:
+            try:
+                nb_max_val = float(str(nb_max).split()[0]) if isinstance(nb_max, str) else float(nb_max)
+                if nb_log > nb_max_val:
+                    nb_log = nb_max_val
+                    contraintes.append(f"Plafond {nb_max_val:.0f} log/construction limitant")
+            except (ValueError, TypeError):
+                pass
+
+        nb_logements = max(1, math.floor(nb_log))
+
+    # Mix typologique
+    mix_detail: Dict[str, Dict[str, Any]] = {}
+    if nb_logements <= 0:
+        pass
+    elif nb_logements <= 2:
+        mix_detail = {"T3": {"nb": nb_logements, "shn_m2": 70, "scb_m2": 88}}
+    else:
+        for t, d in MIX_STANDARD.items():
+            mix_detail[t] = {
+                "nb": max(1, round(nb_logements * d["pct"])),
+                "shn_m2": d["shn_m2"],
+                "scb_m2": d["scb_m2"],
+            }
+        total_mix = sum(dd["nb"] for dd in mix_detail.values())
+        if total_mix != nb_logements:
+            mix_detail["T2"]["nb"] += nb_logements - total_mix
+
+    total_log = sum(d["nb"] for d in mix_detail.values())
+    avg_shn = (sum(d["shn_m2"] * d["nb"] for d in mix_detail.values()) / total_log
+               if total_log > 0 else 0.0)
+    if avg_shn < 52 and total_log > 0:
+        contraintes.append(f"Moyenne SHN {avg_shn:.0f}m2 < 52m2 reglementaire")
+
+    return {
+        "nb_logements": nb_logements,
+        "mix_detail": mix_detail,
+        "surface_moyenne_shn_m2": round(avg_shn, 1),
+        "scb_logement_m2": round(scb_logement, 1),
+        "scb_commerce_m2": round(scb_commerce, 1),
+        "type_zone": type_zone,
+        "logement_autorise": logement_ok,
+        "contraintes": contraintes,
+        "hab1": {
+            "corrige": corriger_hab1,
+            "scb_moyenne_par_logement_m2": round(SCB_MOYENNE_PAR_LOGEMENT, 1),
+            "shn_moyenne_par_logement_m2": round(SHN_MOYENNE_PAR_LOGEMENT, 1),
+        },
+    }
+
+
+# ============================================================
+# SPRINT 2 - PARKINGS REGLEMENTAIRES
+# ============================================================
+
+def calculate_parkings(mix_detail: Dict[str, Dict[str, Any]],
+                       scb_commerce_m2: float = 0.0) -> Dict[str, Any]:
+    """
+    Calcule les places de parking reglementaires (auto + velo + surface SS).
+
+    Porte de main.py v2.3 (calculer_parkings / calculer_parkings_velo, etape 9).
+    Bareme auto par logement selon SHN : <60m2 -> 1/1, 60-90 -> 1/2, >90 -> 1/3.
+    Commerce : 1 place / 20 m2 SCB. Velo : 1/logement + commerce.
+    """
+    p_min = 0
+    p_max = 0
+    nb_logements = sum(d["nb"] for d in mix_detail.values())
+
+    for _, data in mix_detail.items():
+        nb = data["nb"]
+        shn = data["shn_m2"]
+        if shn < 60:
+            p_min += nb * 1
+            p_max += nb * 1
+        elif shn <= 90:
+            p_min += nb * 1
+            p_max += nb * 2
+        else:
+            p_min += nb * 1
+            p_max += nb * 3
+
+    if scb_commerce_m2 > 0:
+        p_com = math.ceil(scb_commerce_m2 / 20)
+        p_min += p_com
+        p_max += p_com
+
+    # Velo
+    velo = nb_logements
+    if scb_commerce_m2 > 0:
+        velo += (math.ceil(scb_commerce_m2 / 50) if scb_commerce_m2 < 2000
+                 else math.ceil(scb_commerce_m2 / 200))
+
+    surface_parking_ss_m2 = p_min * 25  # ~25 m2/place en sous-sol
+
+    return {
+        "auto_min": p_min,
+        "auto_max": p_max,
+        "velo": velo,
+        "surface_sous_sol_estimee_m2": surface_parking_ss_m2,
+    }
+
+
+# ============================================================
+# SPRINT 2 - TYPE DE CONSTRUCTION (proxy adjacence cadastrale)
+# ============================================================
+
+def detect_construction_type(edges_classified: List[Dict[str, Any]],
+                             idx_voirie: int,
+                             idx_fond: int,
+                             min_edge_m: float = 2.0) -> Dict[str, Any]:
+    """
+    Deduit le type de construction depuis l'adjacence cadastrale (Sprint 1.5).
+
+    PROXY v0.3 : on n'a pas (encore) de source batie. On approxime par les
+    mitoyennetes LATERALES potentielles = aretes non-voirie, non-fond, adjacentes
+    a une parcelle privee (voisin present, k_nature non public). C'est de
+    l'adjacence FONCIERE, pas de la mitoyennete batie reelle -> confiance "proxy".
+
+    Regle :
+        n_lateraux_mitoyens = nb aretes laterales avec voisin prive
+          0 -> maison_isolee_4_facades
+          1 -> maison_jumelee
+          2 -> maison_mitoyenne_2_facades
+          >=3 -> bande
+
+    Args:
+        edges_classified : sortie detect_voirie_by_adjacency (vide si fallback)
+        idx_voirie, idx_fond : index des aretes voirie et fond a exclure
+        min_edge_m : ignore les micro-aretes (coins)
+
+    Returns:
+        dict avec type, n_lateraux, n_mitoyens, method, confiance, details.
+    """
+    if not edges_classified:
+        return {
+            "type": "indetermine",
+            "n_lateraux": 0,
+            "n_mitoyens": 0,
+            "method": "indisponible_sans_classification_cadastrale",
+            "confiance": "nulle",
+            "details": [],
+        }
+
+    lateraux = []
+    n_mitoyens = 0
+    for e in edges_classified:
+        if e["idx"] in (idx_voirie, idx_fond):
+            continue
+        if e.get("length_m", 0) < min_edge_m:
+            continue
+        mitoyen = (not e["is_voirie"]) and (e.get("voisin_id") is not None)
+        lateraux.append({
+            "idx": e["idx"],
+            "label": e.get("label"),
+            "length_m": e.get("length_m"),
+            "mitoyen": mitoyen,
+            "voisin_nature": e.get("voisin_nature"),
+        })
+        if mitoyen:
+            n_mitoyens += 1
+
+    if n_mitoyens == 0:
+        type_constr = "maison_isolee_4_facades"
+    elif n_mitoyens == 1:
+        type_constr = "maison_jumelee"
+    elif n_mitoyens == 2:
+        type_constr = "maison_mitoyenne_2_facades"
+    else:
+        type_constr = "bande"
+
+    return {
+        "type": type_constr,
+        "n_lateraux": len(lateraux),
+        "n_mitoyens": n_mitoyens,
+        "method": "cadastral_adjacency_proxy_v0.3",
+        "confiance": "proxy_foncier",
+        "details": lateraux,
+    }
+
+
+# ============================================================
+# SPRINT 2 - WARNINGS SYSTEME
+# ============================================================
+
+def _mk_warning(code: str, level: str, fr: str, en: str,
+                edge: Optional[str] = None) -> Dict[str, Any]:
+    return {"code": code, "level": level, "message_fr": fr, "message_en": en, "edge": edge}
+
+
+def generate_warnings(edges_classified: List[Dict[str, Any]],
+                      idx_voirie: int,
+                      all_voirie_edges: List[int],
+                      parcelle_nb_sommets: int,
+                      type_construction: Dict[str, Any],
+                      zone_pag: Dict[str, Any],
+                      enveloppe_vide: bool = False,
+                      profondeur_insuffisante: bool = False,
+                      voirie_edge_label: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Genere la liste des warnings systeme (codes + niveau + FR/EN + arete).
+
+    Codes : FACADE_RUE_COURTE, PARCELLE_QUASI_ENCLAVEE, PARCELLE_NON_RECTANGULAIRE,
+            PROFONDEUR_INSUFFISANTE, JUMELAGE_DETECTE_SANS_DROITE, ENVELOPPE_VIDE.
+    """
+    warnings: List[Dict[str, Any]] = []
+
+    if enveloppe_vide:
+        warnings.append(_mk_warning(
+            "ENVELOPPE_VIDE", "critique",
+            "Enveloppe constructible nulle ou degeneree : reculs trop restrictifs "
+            "ou parcelle trop petite.",
+            "Constructible envelope is empty or degenerate: setbacks too restrictive "
+            "or parcel too small."))
+
+    # Longueurs voirie
+    voirie_total_m = 0.0
+    selected_len = None
+    if edges_classified:
+        for e in edges_classified:
+            if e["idx"] in all_voirie_edges:
+                voirie_total_m += e.get("length_m", 0)
+            if e["idx"] == idx_voirie:
+                selected_len = e.get("length_m")
+
+    if selected_len is not None and selected_len < FACADE_RUE_COURTE_SEUIL_M:
+        warnings.append(_mk_warning(
+            "FACADE_RUE_COURTE", "warning",
+            f"Facade sur rue courte ({selected_len:.1f} m < {FACADE_RUE_COURTE_SEUIL_M:.0f} m) : "
+            "implantation et acces a verifier.",
+            f"Short street frontage ({selected_len:.1f} m < {FACADE_RUE_COURTE_SEUIL_M:.0f} m): "
+            "layout and access to be checked.",
+            edge=voirie_edge_label))
+
+    if edges_classified and 0 < voirie_total_m < PARCELLE_QUASI_ENCLAVEE_SEUIL_M:
+        warnings.append(_mk_warning(
+            "PARCELLE_QUASI_ENCLAVEE", "critique",
+            f"Parcelle quasi-enclavee : contact voirie total {voirie_total_m:.1f} m "
+            f"< {PARCELLE_QUASI_ENCLAVEE_SEUIL_M:.0f} m.",
+            f"Near-landlocked parcel: total street contact {voirie_total_m:.1f} m "
+            f"< {PARCELLE_QUASI_ENCLAVEE_SEUIL_M:.0f} m."))
+
+    if parcelle_nb_sommets > 5:
+        warnings.append(_mk_warning(
+            "PARCELLE_NON_RECTANGULAIRE", "info",
+            f"Parcelle non rectangulaire ({parcelle_nb_sommets} sommets) : "
+            "estimation d'enveloppe indicative.",
+            f"Non-rectangular parcel ({parcelle_nb_sommets} vertices): "
+            "envelope estimate is indicative."))
+
+    if profondeur_insuffisante and not enveloppe_vide:
+        warnings.append(_mk_warning(
+            "PROFONDEUR_INSUFFISANTE", "warning",
+            "Profondeur de parcelle limite vis-a-vis des reculs avant + arriere.",
+            "Parcel depth is tight given front + rear setbacks."))
+
+    tc = type_construction.get("type")
+    if tc in ("maison_jumelee", "maison_mitoyenne_2_facades", "bande"):
+        warnings.append(_mk_warning(
+            "JUMELAGE_DETECTE_SANS_DROITE", "info",
+            f"Mitoyennete potentielle detectee ({tc}) par adjacence cadastrale : "
+            "verifier le droit a batir en limite (PAG/PAP).",
+            f"Potential party-wall situation detected ({tc}) via cadastral adjacency: "
+            "check the right to build on the boundary (PAG/PAP)."))
+
+    return warnings
+
+
+# ============================================================
+# SPRINT 2 - ORCHESTRATEUR /palladio/calcul/full
+# ============================================================
+
+def _profondeur_disponible(pts_luref: List[List[float]], idx_voirie: int) -> float:
+    """Profondeur perpendiculaire max de la parcelle depuis l'arete voirie."""
+    poly = Polygon(pts_luref)
+    centroid = (poly.centroid.x, poly.centroid.y)
+    n = len(pts_luref)
+    a, b = pts_luref[idx_voirie], pts_luref[(idx_voirie + 1) % n]
+    mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    nx, ny = edge_inward_normal(pts_luref, idx_voirie, centroid)
+    return max((nx * (p[0] - mid[0]) + ny * (p[1] - mid[1])) for p in pts_luref)
+
+
+def calculer_palladio_full(
+    parcel_geometry_wgs84: Dict[str, Any],
+    point_geocode_wgs84: List[float],
+    recul_avant_m: float,
+    recul_lateral_m: float,
+    recul_arriere_m: float,
+    zone_pag: Optional[Dict[str, Any]] = None,
+    profondeur_max_m: Optional[float] = None,
+    parcelle_id: Optional[str] = None,
+    corriger_hab1: bool = False,
+) -> Dict[str, Any]:
+    """
+    Endpoint metier complet Sprint 2 : enveloppe + voirie + SCB + logements
+    + parkings + type construction + warnings. Palladio v0.3.
+
+    Ne leve PAS d'erreur sur enveloppe degeneree : retourne une reponse
+    structuree avec warning ENVELOPPE_VIDE (cas test 8). Tolere zone_pag
+    absente (commune sans PAG, cas test 9) via defauts surs.
+
+    Returns:
+        dict JSONifiable : meta + tout l'output /calcul + scb + logements
+        + parkings + type_construction + warnings.
+    """
+    zone_pag = zone_pag or {}
+
+    # ---- 1. Enveloppe + voirie (reutilise tout le Sprint 1/1.5) ----
+    enveloppe_vide = False
+    base = None
+    try:
+        base = calculer_emprise_palladio(
+            parcel_geometry_wgs84=parcel_geometry_wgs84,
+            point_geocode_wgs84=point_geocode_wgs84,
+            recul_avant_m=recul_avant_m,
+            recul_lateral_m=recul_lateral_m,
+            recul_arriere_m=recul_arriere_m,
+            profondeur_max_m=profondeur_max_m,
+            parcelle_id=parcelle_id,
+        )
+    except PalladioError as e:
+        enveloppe_vide = True
+        base_error = str(e)
+
+    # Cas enveloppe degeneree : reponse structuree, pas de 500
+    if enveloppe_vide:
+        # On tente quand meme de reconstruire la parcelle pour les warnings geometrie
+        try:
+            ring_wgs = _normalize_ring(parcel_geometry_wgs84["coordinates"][0])
+            nb_sommets = len(ring_wgs)
+        except Exception:
+            nb_sommets = 0
+        warnings = generate_warnings(
+            edges_classified=[], idx_voirie=0, all_voirie_edges=[],
+            parcelle_nb_sommets=nb_sommets, type_construction={"type": "indetermine"},
+            zone_pag=zone_pag, enveloppe_vide=True)
+        return {
+            "meta": {"engine": "palladio", "version": "0.3", "method": "full",
+                     "enveloppe_vide": True, "error": base_error},
+            "parcelle": {"nb_sommets": nb_sommets, "id": parcelle_id},
+            "scb": None, "logements": None, "parkings": None,
+            "type_construction": {"type": "indetermine", "method": "enveloppe_vide"},
+            "warnings": warnings,
+            "enveloppe": base,
+        }
+
+    # ---- 2. SCB ----
+    emprise_au_sol = base["emprise"]["surface_m2"]
+    surface_terrain = base["parcelle"]["surface_cadastrale_m2"]
+    scb = calculate_scb(emprise_au_sol, zone_pag, surface_terrain_net_m2=surface_terrain)
+
+    # ---- 3. Logements ----
+    logements = calculate_logements(
+        scb_totale_m2=scb["scb_totale_m2"],
+        surface_habitable_m2=scb["surface_habitable_m2"],
+        emprise_au_sol_m2=emprise_au_sol,
+        zone_pag=zone_pag,
+        surface_terrain_m2=surface_terrain,
+        corriger_hab1=corriger_hab1,
+    )
+
+    # ---- 4. Parkings ----
+    parkings = calculate_parkings(
+        logements["mix_detail"],
+        scb_commerce_m2=logements["scb_commerce_m2"],
+    )
+
+    # ---- 5. Type de construction (proxy cadastral) ----
+    edges_classified = base["voirie"]["detection"].get("edges_classified", [])
+    all_voirie_edges = base["voirie"]["detection"].get("all_voirie_edges", [])
+    idx_voirie = base["voirie"]["idx"]
+    idx_fond = base["fond"]["idx"]
+    type_construction = detect_construction_type(edges_classified, idx_voirie, idx_fond)
+
+    # ---- 6. Warnings ----
+    pts_luref = base["parcelle"]["geometry_luref"]["coordinates"][0]
+    pts_luref = _normalize_ring(pts_luref)
+    prof_dispo = _profondeur_disponible(pts_luref, idx_voirie)
+    prof_insuffisante = prof_dispo < (recul_avant_m + recul_arriere_m + PROFONDEUR_MARGE_M)
+    warnings = generate_warnings(
+        edges_classified=edges_classified,
+        idx_voirie=idx_voirie,
+        all_voirie_edges=all_voirie_edges,
+        parcelle_nb_sommets=base["parcelle"]["nb_sommets"],
+        type_construction=type_construction,
+        zone_pag=zone_pag,
+        enveloppe_vide=False,
+        profondeur_insuffisante=prof_insuffisante,
+        voirie_edge_label=base["voirie"]["edge_label"],
+    )
+
+    # ---- 7. Assemblage ----
+    return {
+        "meta": {
+            "engine": "palladio",
+            "version": "0.3",
+            "method": "full",
+            "enveloppe_vide": False,
+            "hab1_corrige": corriger_hab1,
+        },
+        "parcelle": base["parcelle"],
+        "voirie": base["voirie"],
+        "fond": base["fond"],
+        "reculs_appliques": base["reculs_appliques"],
+        "emprise": base["emprise"],
+        "traces_reculs": base["traces_reculs"],
+        "scb": scb,
+        "logements": logements,
+        "parkings": parkings,
+        "type_construction": type_construction,
+        "profondeur_disponible_m": round(prof_dispo, 1),
+        "warnings": warnings,
+    }
