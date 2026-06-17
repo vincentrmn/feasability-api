@@ -11,6 +11,7 @@ if (palladioResponse && palladioResponse.emprise) {
     status: 'ok',
     reculs_envoyes: palladioResume.reculs_appliques,
     parcel_nb_sommets_envoyes: palladioResume.parcel_nb_sommets,
+    parcelle: palladioResponse.parcelle,
     voirie: palladioResponse.voirie,
     fond: palladioResponse.fond,
     emprise: palladioResponse.emprise,
@@ -71,21 +72,10 @@ function renderPage(d) {
   const e4 = d.etape_4_regles_airtable;
   const e5 = d.etape_5_emprise;
 
-  const wgsRing = e2.geometry.coordinates[0].slice(0, -1);
-  const ptWgs = [e1.lon_wgs84, e1.lat_wgs84];
+  // Parcelle dessinee depuis la geometrie LUREF FUSIONNEE du moteur (faces entieres,
+  // labels coherents avec voirie/fond). LUREF exact, plus d'approximation WGS.
   const ptLuref = e5.voirie.point_luref;
-
-  const COS_LAT = Math.cos(49.6 * Math.PI / 180);
-  const SCALE_X = 111000 * COS_LAT;
-  const SCALE_Y = 111000;
-  function wgsToLurefApprox(lon, lat) {
-    return [
-      (lon - ptWgs[0]) * SCALE_X + ptLuref[0],
-      (lat - ptWgs[1]) * SCALE_Y + ptLuref[1],
-    ];
-  }
-
-  const parcelLurefPts = wgsRing.map(([lon, lat]) => wgsToLurefApprox(lon, lat));
+  const parcelLurefPts = e5.parcelle.geometry_luref.coordinates[0].slice(0, -1);
   const empriseLurefPts = e5.emprise.geometry_luref.coordinates[0].slice(0, -1);
 
   const allXs = [...parcelLurefPts.map(p => p[0]), ...empriseLurefPts.map(p => p[0]), ptLuref[0]];

@@ -197,6 +197,40 @@ def find_limite_voirie(pts: List[List[float]], voirie_point: List[float]) -> int
     return best[1]
 
 
+def merge_collinear_vertices(pts: List[List[float]], angle_thresh_deg: float = 8.0
+                             ) -> List[List[float]]:
+    """
+    Fusionne les sommets quasi-colineaires : le cadastre scinde souvent une
+    facade droite en plusieurs segments (ex : FG + GA = une seule rue). On
+    supprime tout sommet dont les aretes entrante/sortante font un angle
+    inferieur a angle_thresh_deg, pour que voirie / fond / reculs portent sur
+    des faces entieres.
+
+    L'enveloppe finale est ensuite clippee sur la parcelle cadastrale REELLE
+    (non simplifiee), donc aucun risque de debordement meme si le seuil fusionne
+    un coin legerement marque.
+    """
+    n = len(pts)
+    if n <= 4:
+        return [list(p) for p in pts]
+    cos_min = math.cos(math.radians(angle_thresh_deg))
+    keep = []
+    for i in range(n):
+        a, b, c = pts[(i - 1) % n], pts[i], pts[(i + 1) % n]
+        d1 = (b[0] - a[0], b[1] - a[1])
+        d2 = (c[0] - b[0], c[1] - b[1])
+        l1, l2 = math.hypot(*d1), math.hypot(*d2)
+        if l1 < 1e-9 or l2 < 1e-9:
+            continue  # sommet degenere (doublon)
+        dot = (d1[0] * d2[0] + d1[1] * d2[1]) / (l1 * l2)
+        if dot >= cos_min:
+            continue  # quasi-colineaire : sommet redondant
+        keep.append([b[0], b[1]])
+    if len(keep) < 3:
+        return [list(p) for p in pts]  # securite : ne pas degenerer
+    return keep
+
+
 def edge_inward_normal(pts: List[List[float]], idx: int, centroid: Tuple[float, float]) -> Tuple[float, float]:
     """Normale unitaire pointant vers l'interieur de la parcelle pour l'arete idx."""
     n = len(pts)
@@ -659,7 +693,14 @@ def calculer_emprise_palladio(
             raise PalladioError(f"Parcelle invalide apres make_valid : {parcel_poly_luref.geom_type}")
         pts_luref = _normalize_ring(list(parcel_poly_luref.exterior.coords))
 
-    surface_cadastrale_m2 = parcel_poly_luref.area
+    # Surface + polygone cadastral REELS (non simplifies) pour ratio et clip final
+    parcel_poly_true = parcel_poly_luref
+    surface_cadastrale_m2 = parcel_poly_true.area
+
+    # ---- Fusion des sommets quasi-colineaires (segments cadastraux scindes) ----
+    # voirie / fond / reculs portent ensuite sur des faces entieres.
+    pts_luref = merge_collinear_vertices(pts_luref)
+    parcel_poly_luref = Polygon(pts_luref)
     n_sommets = len(pts_luref)
 
     # ---- Detection voirie : Sprint 1.5 (cadastral) + fallback geocode ----
@@ -700,6 +741,10 @@ def calculer_emprise_palladio(
 
     best_area, best_idx_fond, best_env, best_traces = best
 
+    # Clip sur la parcelle cadastrale REELLE (securite anti-debordement post-fusion)
+    best_env = best_env.intersection(parcel_poly_true)
+    best_area = best_env.area if not best_env.is_empty else 0.0
+
     if best_area < 1.0:
         raise PalladioError(
             f"Enveloppe degeneree : surface {best_area:.1f} m2 sur parcelle de "
@@ -722,17 +767,22 @@ def calculer_emprise_palladio(
     return {
         "meta": {
             "engine": "palladio",
-            "version": "0.2",
-            "method": "shapely_buffer_halfplanes_v5_with_cadastral_voirie",
+            "version": "0.3",
+            "method": "shapely_buffer_halfplanes_v5_cadastral_voirie_merged_faces",
         },
         "parcelle": {
             "geometry_luref": {
                 "type": "Polygon",
                 "coordinates": [_close_ring([list(p) for p in pts_luref])],
             },
-            "geometry_wgs84": parcel_geometry_wgs84,
+            "geometry_wgs84": {
+                "type": "Polygon",
+                "coordinates": [_close_ring(luref_ring_to_wgs84(pts_luref))],
+            },
+            "geometry_wgs84_cadastrale": parcel_geometry_wgs84,
             "surface_cadastrale_m2": round(surface_cadastrale_m2, 1),
             "nb_sommets": n_sommets,
+            "nb_sommets_cadastraux": len(ring_wgs),
             "id": parcelle_id,
         },
         "voirie": {
