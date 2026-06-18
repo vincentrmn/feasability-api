@@ -982,7 +982,7 @@ def calculate_logements(scb_totale_m2: float,
                         emprise_au_sol_m2: float,
                         zone_pag: Dict[str, Any],
                         surface_terrain_m2: float,
-                        corriger_hab1: bool = False) -> Dict[str, Any]:
+                        corriger_hab1: bool = True) -> Dict[str, Any]:
     """
     Estime le nombre de logements theoriques et le mix typologique.
 
@@ -1335,7 +1335,7 @@ def calculer_palladio_full(
     zone_pag: Optional[Dict[str, Any]] = None,
     profondeur_max_m: Optional[float] = None,
     parcelle_id: Optional[str] = None,
-    corriger_hab1: bool = False,
+    corriger_hab1: bool = True,
 ) -> Dict[str, Any]:
     """
     Endpoint metier complet Sprint 2 : enveloppe + voirie + SCB + logements
