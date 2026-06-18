@@ -116,6 +116,39 @@ PROFONDEUR_MARGE_M = 6.0  # marge mini au-dela de recul_avant + recul_arriere
 
 
 # ============================================================
+# CONSTANTES SPRINT 3 - DETECTION MITOYENNETE BATIE (couche batiments)
+# ============================================================
+# Objectif : detecter les VRAIS murs mitoyens batis (pas l'adjacence foncière
+# du proxy Sprint 2) pour, a terme, mettre le recul lateral a 0 sur les cotes
+# reellement accoles. Sprint 3 etape 1 = detection en SORTIE seulement, on ne
+# touche pas encore au calcul d'emprise.
+
+# Catalogue OGC Features Geoportail (auto-decouverte de la collection batiments)
+GEOPORTAIL_COLLECTIONS_URL = "https://features.geoportail.lu/collections"
+
+# Mots-cles d'identification de la collection batiments dans le catalogue
+BUILDINGS_COLLECTION_KEYWORDS = ("batiment", "building", "immeuble", "bati", "edifice")
+
+# Cache module-level de l'id de collection batiments decouvert
+_BUILDINGS_COLLECTION_ID: Optional[str] = None
+_BUILDINGS_DISCOVERY_DONE = False
+
+# Distance de sondage perpendiculaire vers l'exterieur pour tester la presence
+# d'un batiment voisin accole a une arete (metres LUREF). Petit : le mur mitoyen
+# est sur la limite, donc le bati voisin commence juste de l'autre cote.
+BUILDING_PROBE_DISTANCE_M = 0.6
+
+# Nombre de points echantillonnes le long d'une arete pour la detection batie
+MITOYENNETE_N_SAMPLES = 7
+
+# Fraction min de points tombant dans un batiment voisin pour declarer mur mitoyen
+MITOYENNETE_COVERAGE_SEUIL = 0.4
+
+# Ignore les micro-aretes (coins de fusion) dans la detection batie (m)
+MITOYENNETE_MIN_EDGE_M = 2.0
+
+
+# ============================================================
 # REPROJECTION HELPERS (WGS84 <-> LUREF)
 # ============================================================
 
@@ -524,6 +557,183 @@ def select_voirie_edge_from_classification(edges_classified: List[Dict[str, Any]
         "all_voirie_edges": [e["idx"] for e in voirie_edges],
         "fallback_used": None,
     }
+
+
+# ============================================================
+# SPRINT 3 - COUCHE BATIMENTS / DETECTION MITOYENNETE BATIE
+# ============================================================
+
+def discover_buildings_collection(timeout: int = NEIGHBORS_HTTP_TIMEOUT_S
+                                   ) -> Optional[str]:
+    """
+    Auto-decouvre l'id de la collection batiments dans le catalogue OGC Geoportail.
+
+    On ne hardcode pas un numero de collection (il peut changer) : on interroge
+    /collections et on retient la premiere collection dont le titre / id / desc
+    contient un mot-cle batiment. Resultat mis en cache module-level (un seul
+    appel reseau par process). Retourne None en cas d'echec (fallback safe).
+    """
+    global _BUILDINGS_COLLECTION_ID, _BUILDINGS_DISCOVERY_DONE
+    if _BUILDINGS_DISCOVERY_DONE:
+        return _BUILDINGS_COLLECTION_ID
+    _BUILDINGS_DISCOVERY_DONE = True
+
+    if not _REQUESTS_OK:
+        print(f"[palladio bati] WARN requests indisponible : {_REQUESTS_ERROR}")
+        return None
+
+    try:
+        r = requests.get(GEOPORTAIL_COLLECTIONS_URL, params={"f": "json"}, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        print(f"[palladio bati] WARN catalogue collections injoignable : {e}")
+        return None
+
+    found = None
+    for col in data.get("collections", []):
+        cid = col.get("id") or col.get("name")
+        title = (col.get("title") or "").lower()
+        desc = (col.get("description") or "").lower()
+        hay = f"{title} {desc} {str(cid).lower()}"
+        if any(k in hay for k in BUILDINGS_COLLECTION_KEYWORDS):
+            found = str(cid)
+            print(f"[palladio bati] collection batiments decouverte : {found} ({title})")
+            break
+
+    if found is None:
+        print("[palladio bati] WARN aucune collection batiments trouvee dans le catalogue")
+    _BUILDINGS_COLLECTION_ID = found
+    return found
+
+
+def _geojson_geom_to_luref_polys(geom: Dict[str, Any]) -> List[Polygon]:
+    """Convertit une geometrie GeoJSON (Polygon|MultiPolygon) WGS84 en Polygones LUREF."""
+    polys: List[Polygon] = []
+    gtype = geom.get("type")
+    coords = geom.get("coordinates")
+    if not coords:
+        return polys
+    rings_sets = [coords] if gtype == "Polygon" else (coords if gtype == "MultiPolygon" else [])
+    for poly_coords in rings_sets:
+        try:
+            exterior_wgs = poly_coords[0]
+            poly = Polygon(wgs84_ring_to_luref(exterior_wgs))
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            if poly.is_empty or poly.geom_type != "Polygon":
+                continue
+            polys.append(poly)
+        except Exception:
+            continue
+    return polys
+
+
+def fetch_buildings(bbox_wgs84: Tuple[float, float, float, float],
+                    timeout: int = NEIGHBORS_HTTP_TIMEOUT_S) -> List[Polygon]:
+    """
+    Recupere les emprises batiments (LUREF) dans une bbox via Geoportail OGC Features.
+
+    Mirroir de fetch_neighbors_359 mais sur la collection batiments auto-decouverte.
+    Retourne une liste de Polygones Shapely en LUREF. Liste vide en cas d'echec
+    (fallback safe : la detection mitoyennete batie sera simplement "indisponible").
+    """
+    if not _REQUESTS_OK:
+        return []
+    cid = discover_buildings_collection(timeout=timeout)
+    if not cid:
+        return []
+
+    url = f"{GEOPORTAIL_COLLECTIONS_URL}/{cid}/items"
+    params = {
+        "bbox": f"{bbox_wgs84[0]},{bbox_wgs84[1]},{bbox_wgs84[2]},{bbox_wgs84[3]}",
+        "bbox-crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84",
+        "f": "json",
+        "limit": 800,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        print(f"[palladio bati] WARN fetch batiments a echoue : {e}")
+        return []
+
+    buildings: List[Polygon] = []
+    for feat in data.get("features", []):
+        geom = feat.get("geometry") or {}
+        buildings.extend(_geojson_geom_to_luref_polys(geom))
+    return buildings
+
+
+def detect_mitoyennete_batie(pts_luref: List[List[float]],
+                             parcel_poly_luref: Polygon,
+                             edges_classified: List[Dict[str, Any]],
+                             buildings: List[Polygon]) -> Dict[str, Any]:
+    """
+    Detecte les VRAIS murs mitoyens batis (Sprint 3) par presence d'un batiment
+    voisin accole a chaque arete non-voirie.
+
+    Pour chaque arete non-voirie : on echantillonne MITOYENNETE_N_SAMPLES points
+    le long de l'arete, decales BUILDING_PROBE_DISTANCE_M vers l'EXTERIEUR de la
+    parcelle, et on teste s'ils tombent dans un batiment. Si la fraction de points
+    "dans un bati" >= MITOYENNETE_COVERAGE_SEUIL -> mur mitoyen bati reel.
+
+    Difference avec detect_construction_type (Sprint 2) : ce dernier deduit la
+    typologie depuis l'adjacence FONCIERE (parcelle voisine privee). Ici on
+    constate le BATI reel accole -> base pour mettre, a terme, le recul lateral
+    a 0 sur ce cote (Sprint 3 etape 2).
+
+    Sortie informative : ne modifie PAS encore le calcul d'emprise.
+    """
+    base = {
+        "disponible": bool(buildings),
+        "n_batiments": len(buildings),
+        "n_murs_mitoyens_batis": 0,
+        "method": "geoportail_buildings_overlay_v0.3",
+        "edges": [],
+    }
+    if not edges_classified or not buildings:
+        if not buildings:
+            base["method"] = "indisponible_aucun_batiment_fetched"
+        return base
+
+    n = len(pts_luref)
+    n_murs = 0
+    for e in edges_classified:
+        idx = e["idx"]
+        if e.get("is_voirie"):
+            continue  # une facade sur rue n'est jamais un mur mitoyen
+        if e.get("length_m", 0) < MITOYENNETE_MIN_EDGE_M:
+            continue
+        p1 = pts_luref[idx]
+        p2 = pts_luref[(idx + 1) % n]
+        normal = edge_outward_normal_from_polygon(p1, p2, parcel_poly_luref)
+        n_in = 0
+        for k in range(1, MITOYENNETE_N_SAMPLES + 1):
+            t = k / (MITOYENNETE_N_SAMPLES + 1)
+            sx = p1[0] + (p2[0] - p1[0]) * t + normal[0] * BUILDING_PROBE_DISTANCE_M
+            sy = p1[1] + (p2[1] - p1[1]) * t + normal[1] * BUILDING_PROBE_DISTANCE_M
+            pt = Point(sx, sy)
+            if any(b.contains(pt) for b in buildings):
+                n_in += 1
+        ratio = n_in / MITOYENNETE_N_SAMPLES
+        mur = ratio >= MITOYENNETE_COVERAGE_SEUIL
+        if mur:
+            n_murs += 1
+        base["edges"].append({
+            "idx": idx,
+            "label": e.get("label"),
+            "length_m": e.get("length_m"),
+            "voisin_nature": e.get("voisin_nature"),
+            "n_points": MITOYENNETE_N_SAMPLES,
+            "n_points_bati": n_in,
+            "ratio_couverture": round(ratio, 2),
+            "mur_mitoyen_bati": mur,
+        })
+
+    base["n_murs_mitoyens_batis"] = n_murs
+    return base
 
 
 # ============================================================
@@ -1440,6 +1650,25 @@ def calculer_palladio_full(
     idx_fond = base["fond"]["idx"]
     type_construction = detect_construction_type(edges_classified, idx_voirie, idx_fond)
 
+    # ---- 5bis. Mitoyennete batie reelle (Sprint 3, couche batiments) ----
+    # Sortie informative : on detecte les murs mitoyens batis sans encore
+    # modifier les reculs (on valide d'abord que les bons cotes sont detectes).
+    pts_luref_full = _normalize_ring(base["parcelle"]["geometry_luref"]["coordinates"][0])
+    mitoyennete_batie = {"disponible": False, "n_batiments": 0,
+                         "method": "non_tente", "edges": []}
+    try:
+        ring_wgs_cad = _normalize_ring(
+            base["parcelle"]["geometry_wgs84_cadastrale"]["coordinates"][0])
+        bbox_b = _pad_bbox(_bbox_from_ring_wgs84(ring_wgs_cad), BBOX_MARGIN_DEG)
+        buildings = fetch_buildings(bbox_b)
+        parcel_poly_full = Polygon(pts_luref_full)
+        mitoyennete_batie = detect_mitoyennete_batie(
+            pts_luref_full, parcel_poly_full, edges_classified, buildings)
+    except Exception as ex:
+        print(f"[palladio bati] WARN detection mitoyennete batie a echoue : {ex}")
+        mitoyennete_batie = {"disponible": False, "n_batiments": 0,
+                             "method": f"erreur_{type(ex).__name__}", "edges": []}
+
     # ---- 6. Warnings ----
     pts_luref = base["parcelle"]["geometry_luref"]["coordinates"][0]
     pts_luref = _normalize_ring(pts_luref)
@@ -1477,6 +1706,7 @@ def calculer_palladio_full(
         "logements": logements,
         "parkings": parkings,
         "type_construction": type_construction,
+        "mitoyennete_batie": mitoyennete_batie,
         "profondeur_disponible_m": round(prof_dispo, 1),
         "warnings": warnings,
     }
