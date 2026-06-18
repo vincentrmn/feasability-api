@@ -40,6 +40,7 @@ import math
 from typing import List, Tuple, Optional, Dict, Any
 from shapely.geometry import Polygon, Point, LineString
 from shapely.validation import make_valid
+from shapely.ops import unary_union
 
 try:
     from pyproj import Transformer
@@ -151,11 +152,14 @@ _BUILDINGS_FETCH_DIAG: Dict[str, Any] = {}
 # est sur la limite, donc le bati voisin commence juste de l'autre cote.
 BUILDING_PROBE_DISTANCE_M = 0.6
 
-# Nombre de points echantillonnes le long d'une arete pour la detection batie
-MITOYENNETE_N_SAMPLES = 7
+# Bande de sondage le long d'une arete, decalee vers l'exterieur : on mesure la
+# LONGUEUR d'arete ayant du bati colle de l'autre cote (overlap length), au lieu
+# d'un ratio sur toute l'arete. Robuste sur parcelles profondes (jardin = 0).
+MITOYENNETE_STRIP_IN_M = 0.15   # debut de bande juste hors de la limite
+MITOYENNETE_STRIP_OUT_M = 1.5   # fin de bande cote voisin
 
-# Fraction min de points tombant dans un batiment voisin pour declarer mur mitoyen
-MITOYENNETE_COVERAGE_SEUIL = 0.4
+# Longueur min de mur colle pour declarer un mur mitoyen bati (metres)
+MITOYENNETE_MIN_OVERLAP_M = 3.0
 
 # Ignore les micro-aretes (coins de fusion) dans la detection batie (m)
 MITOYENNETE_MIN_EDGE_M = 2.0
@@ -722,10 +726,14 @@ def detect_mitoyennete_batie(pts_luref: List[List[float]],
     Detecte les VRAIS murs mitoyens batis (Sprint 3) par presence d'un batiment
     voisin accole a chaque arete non-voirie.
 
-    Pour chaque arete non-voirie : on echantillonne MITOYENNETE_N_SAMPLES points
-    le long de l'arete, decales BUILDING_PROBE_DISTANCE_M vers l'EXTERIEUR de la
-    parcelle, et on teste s'ils tombent dans un batiment. Si la fraction de points
-    "dans un bati" >= MITOYENNETE_COVERAGE_SEUIL -> mur mitoyen bati reel.
+    Methode (overlap length) : pour chaque arete non-voirie, on construit une
+    bande fine le long de l'arete, decalee vers l'EXTERIEUR (de STRIP_IN a
+    STRIP_OUT metres), et on l'intersecte avec l'union des batiments. La surface
+    d'intersection / largeur de bande ~ la LONGUEUR d'arete ayant du bati colle
+    de l'autre cote. Si cette longueur >= MITOYENNETE_MIN_OVERLAP_M -> mur mitoyen.
+
+    Plus robuste qu'un ratio sur toute l'arete : sur une parcelle profonde, le mur
+    mitoyen ne couvre que la zone batie pres de la rue, le jardin ne dilue pas.
 
     Difference avec detect_construction_type (Sprint 2) : ce dernier deduit la
     typologie depuis l'adjacence FONCIERE (parcelle voisine privee). Ici on
@@ -738,7 +746,8 @@ def detect_mitoyennete_batie(pts_luref: List[List[float]],
         "disponible": bool(buildings),
         "n_batiments": len(buildings),
         "n_murs_mitoyens_batis": 0,
-        "method": "geoportail_buildings_overlay_v0.3",
+        "method": "geoportail_buildings_overlap_v0.4",
+        "seuil_overlap_m": MITOYENNETE_MIN_OVERLAP_M,
         "edges": [],
     }
     if not edges_classified or not buildings:
@@ -746,6 +755,14 @@ def detect_mitoyennete_batie(pts_luref: List[List[float]],
             base["method"] = "indisponible_aucun_batiment_fetched"
         return base
 
+    try:
+        buildings_union = unary_union(buildings)
+    except Exception:
+        buildings_union = None
+    if buildings_union is None or buildings_union.is_empty:
+        return base
+
+    strip_width = MITOYENNETE_STRIP_OUT_M - MITOYENNETE_STRIP_IN_M
     n = len(pts_luref)
     n_murs = 0
     for e in edges_classified:
@@ -756,17 +773,19 @@ def detect_mitoyennete_batie(pts_luref: List[List[float]],
             continue
         p1 = pts_luref[idx]
         p2 = pts_luref[(idx + 1) % n]
-        normal = edge_outward_normal_from_polygon(p1, p2, parcel_poly_luref)
-        n_in = 0
-        for k in range(1, MITOYENNETE_N_SAMPLES + 1):
-            t = k / (MITOYENNETE_N_SAMPLES + 1)
-            sx = p1[0] + (p2[0] - p1[0]) * t + normal[0] * BUILDING_PROBE_DISTANCE_M
-            sy = p1[1] + (p2[1] - p1[1]) * t + normal[1] * BUILDING_PROBE_DISTANCE_M
-            pt = Point(sx, sy)
-            if any(b.contains(pt) for b in buildings):
-                n_in += 1
-        ratio = n_in / MITOYENNETE_N_SAMPLES
-        mur = ratio >= MITOYENNETE_COVERAGE_SEUIL
+        nx, ny = edge_outward_normal_from_polygon(p1, p2, parcel_poly_luref)
+        # Bande quadrilatere : arete decalee de STRIP_IN a STRIP_OUT vers l'exterieur
+        a = (p1[0] + nx * MITOYENNETE_STRIP_IN_M, p1[1] + ny * MITOYENNETE_STRIP_IN_M)
+        b = (p2[0] + nx * MITOYENNETE_STRIP_IN_M, p2[1] + ny * MITOYENNETE_STRIP_IN_M)
+        c = (p2[0] + nx * MITOYENNETE_STRIP_OUT_M, p2[1] + ny * MITOYENNETE_STRIP_OUT_M)
+        d = (p1[0] + nx * MITOYENNETE_STRIP_OUT_M, p1[1] + ny * MITOYENNETE_STRIP_OUT_M)
+        try:
+            strip = Polygon([a, b, c, d])
+            inter = strip.intersection(buildings_union)
+            overlap_len = (inter.area / strip_width) if strip_width > 0 else 0.0
+        except Exception:
+            overlap_len = 0.0
+        mur = overlap_len >= MITOYENNETE_MIN_OVERLAP_M
         if mur:
             n_murs += 1
         base["edges"].append({
@@ -774,9 +793,7 @@ def detect_mitoyennete_batie(pts_luref: List[List[float]],
             "label": e.get("label"),
             "length_m": e.get("length_m"),
             "voisin_nature": e.get("voisin_nature"),
-            "n_points": MITOYENNETE_N_SAMPLES,
-            "n_points_bati": n_in,
-            "ratio_couverture": round(ratio, 2),
+            "overlap_bati_m": round(overlap_len, 1),
             "mur_mitoyen_bati": mur,
         })
 
