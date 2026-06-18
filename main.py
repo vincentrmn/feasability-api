@@ -565,9 +565,9 @@ class PalladioFullRequest(PalladioRequest):
                     "cus_max, min_scb_logement_pct, dl_max, nb_log_max_par_construction.",
     )
     corriger_hab1: bool = Field(
-        default=False,
-        description="Si True, corrige le bug HAB-1 (comptage logements base SCB coherente). "
-                    "Defaut False = fidele main.py v2.3 (parite).",
+        default=True,
+        description="Si True (defaut), corrige le bug HAB-1 (comptage logements base SCB "
+                    "coherente). False = reproduit main.py v2.3 (mismatch d'unite, sous-compte ~20%).",
     )
 # ============================================================
 # MAPPING AIRTABLE → MOTEUR
