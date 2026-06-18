@@ -1375,22 +1375,22 @@ def calculate_logements(scb_totale_m2: float,
         plafonds["facteur_limitant"] = facteur
         nb_logements = max(1, math.floor(nb_log))
 
-    # Mix typologique
+    # Mix typologique : repartition au plus fort reste (methode de Hamilton).
+    # Le mix est une HYPOTHESE Palladio (MIX_STANDARD), pas une regle du PAP.
+    # On evite l'ancien biais "au moins 1 de chaque type" qui gonflait a 4 puis
+    # rabotait les T2 a 0 sur les petits programmes.
     mix_detail: Dict[str, Dict[str, Any]] = {}
-    if nb_logements <= 0:
-        pass
-    elif nb_logements <= 2:
-        mix_detail = {"T3": {"nb": nb_logements, "shn_m2": 70, "scb_m2": 88}}
-    else:
-        for t, d in MIX_STANDARD.items():
-            mix_detail[t] = {
-                "nb": max(1, round(nb_logements * d["pct"])),
-                "shn_m2": d["shn_m2"],
-                "scb_m2": d["scb_m2"],
-            }
-        total_mix = sum(dd["nb"] for dd in mix_detail.values())
-        if total_mix != nb_logements:
-            mix_detail["T2"]["nb"] += nb_logements - total_mix
+    if nb_logements > 0:
+        raw = {t: nb_logements * d["pct"] for t, d in MIX_STANDARD.items()}
+        alloc = {t: int(math.floor(v)) for t, v in raw.items()}
+        reste = nb_logements - sum(alloc.values())
+        ordre = sorted(MIX_STANDARD.keys(), key=lambda t: raw[t] - alloc[t], reverse=True)
+        for i in range(reste):
+            alloc[ordre[i % len(ordre)]] += 1
+        mix_detail = {
+            t: {"nb": alloc[t], "shn_m2": d["shn_m2"], "scb_m2": d["scb_m2"]}
+            for t, d in MIX_STANDARD.items() if alloc[t] > 0
+        }
 
     total_log = sum(d["nb"] for d in mix_detail.values())
     avg_shn = (sum(d["shn_m2"] * d["nb"] for d in mix_detail.values()) / total_log
