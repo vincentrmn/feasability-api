@@ -807,15 +807,23 @@ def detect_mitoyennete_batie(pts_luref: List[List[float]],
 
 def _compute_enveloppe_unique(pts: List[List[float]], idx_voirie: int, idx_fond: int,
                                ra: float, rl: float, rr: float,
-                               prof_max: Optional[float] = None) -> Tuple[Polygon, List[Dict]]:
+                               prof_max: Optional[float] = None,
+                               party_wall_idxs: Optional[set] = None
+                               ) -> Tuple[Polygon, List[Dict]]:
     """
     Calcule l'enveloppe pour une combinaison (voirie, fond) donnee.
     Pipeline :
       1. buffer(-rl) lateral uniforme (mitre, gere les coins)
+      1bis. (Sprint 3) sur les aretes a mur mitoyen bati (party_wall_idxs), on
+            re-ajoute la bande de recul lateral (recul = 0 sur ces cotes) en
+            unionnant la portion de parcelle a moins de rl de l'arete.
       2. intersection demi-plan recul avant
       3. intersection demi-plan recul arriere
       4. (option) clip a distance <= ra + prof_max de la voirie
+
+    party_wall_idxs absent / vide -> comportement identique a Sprint 1/1.5.
     """
+    party_wall_idxs = party_wall_idxs or set()
     poly = Polygon(pts)
     centroid = (poly.centroid.x, poly.centroid.y)
     n = len(pts)
@@ -823,6 +831,21 @@ def _compute_enveloppe_unique(pts: List[List[float]], idx_voirie: int, idx_fond:
 
     # 1. Buffer lateral uniforme
     env = poly.buffer(-rl, join_style=2, mitre_limit=10)
+    if env.is_empty:
+        return env, traces
+
+    # 1bis. Mitoyennete batie : recul 0 sur les cotes reellement accoles.
+    # On re-ajoute la bande de parcelle situee a moins de rl de l'arete mitoyenne.
+    for i in party_wall_idxs:
+        if i == idx_voirie or i == idx_fond:
+            continue
+        a_i, b_i = pts[i], pts[(i + 1) % n]
+        hp_lat = half_plane_interior(a_i, b_i, rl, centroid)
+        if hp_lat is None:
+            continue
+        strip = poly.difference(hp_lat)  # portion de parcelle a < rl de l'arete i
+        if not strip.is_empty:
+            env = env.union(strip)
     if env.is_empty:
         return env, traces
 
@@ -855,16 +878,18 @@ def _compute_enveloppe_unique(pts: List[List[float]], idx_voirie: int, idx_fond:
             "distance_m": rr,
         })
 
-    # Traces laterales (info uniquement, buffer les gere deja)
+    # Traces laterales (info uniquement ; recul 0 sur murs mitoyens batis)
     for i in range(n):
         if i == idx_voirie or i == idx_fond:
             continue
+        is_party = i in party_wall_idxs
         traces.append({
             "idx": i,
             "from": chr(65 + i),
             "to": chr(65 + (i + 1) % n),
             "cat": "LATERAL",
-            "distance_m": rl,
+            "distance_m": 0.0 if is_party else rl,
+            "mur_mitoyen_bati": is_party,
         })
 
     # 4. Profondeur max (clip arriere-de-la-voirie)
@@ -913,6 +938,7 @@ def calculer_emprise_palladio(
     profondeur_max_m: Optional[float] = None,
     top_k_fond: int = 3,
     parcelle_id: Optional[str] = None,
+    party_wall_idxs: Optional[set] = None,
 ) -> Dict[str, Any]:
     """
     Calcule l'enveloppe constructible 2D d'une parcelle cadastrale.
@@ -1002,6 +1028,7 @@ def calculer_emprise_palladio(
             pts_luref, idx_voirie, idx_f,
             ra=recul_avant_m, rl=recul_lateral_m, rr=recul_arriere_m,
             prof_max=profondeur_max_m,
+            party_wall_idxs=party_wall_idxs,
         )
         area = env_geom.area if not env_geom.is_empty else 0.0
         fond_label = chr(65 + idx_f) + chr(65 + (idx_f + 1) % n_sommets)
@@ -1090,6 +1117,8 @@ def calculer_emprise_palladio(
             "surface_m2": round(best_area, 1),
             "nb_sommets": len(corners_luref),
             "ratio_vs_cadastrale": round(ratio_vs_cadastrale, 3),
+            "mitoyennete_batie_appliquee": sorted(
+                (party_wall_idxs or set()) - {idx_voirie, best_idx_fond}),
         },
         "traces_reculs": best_traces,
     }
@@ -1665,7 +1694,59 @@ def calculer_palladio_full(
             "enveloppe": base,
         }
 
-    # ---- 2. Plafond COS sur l'emprise au sol ----
+    # ---- 2. Type de construction (proxy cadastral, Sprint 2) ----
+    edges_classified = base["voirie"]["detection"].get("edges_classified", [])
+    all_voirie_edges = base["voirie"]["detection"].get("all_voirie_edges", [])
+    idx_voirie = base["voirie"]["idx"]
+    idx_fond = base["fond"]["idx"]
+    type_construction = detect_construction_type(edges_classified, idx_voirie, idx_fond)
+
+    # ---- 3. Mitoyennete batie reelle (Sprint 3, couche batiments) ----
+    pts_luref_full = _normalize_ring(base["parcelle"]["geometry_luref"]["coordinates"][0])
+    mitoyennete_batie = {"disponible": False, "n_batiments": 0,
+                         "method": "non_tente", "edges": []}
+    try:
+        ring_wgs_cad = _normalize_ring(
+            base["parcelle"]["geometry_wgs84_cadastrale"]["coordinates"][0])
+        bbox_b = _pad_bbox(_bbox_from_ring_wgs84(ring_wgs_cad), BBOX_MARGIN_DEG)
+        buildings = fetch_buildings(bbox_b)
+        parcel_poly_full = Polygon(pts_luref_full)
+        mitoyennete_batie = detect_mitoyennete_batie(
+            pts_luref_full, parcel_poly_full, edges_classified, buildings)
+    except Exception as ex:
+        print(f"[palladio bati] WARN detection mitoyennete batie a echoue : {ex}")
+        mitoyennete_batie = {"disponible": False, "n_batiments": 0,
+                             "method": f"erreur_{type(ex).__name__}", "edges": []}
+    mitoyennete_batie["diag"] = {
+        "discovery": _BUILDINGS_DISCOVERY_DIAG,
+        "fetch": _BUILDINGS_FETCH_DIAG,
+    }
+
+    # ---- 3bis. Re-calcul enveloppe avec recul 0 sur les murs mitoyens batis ----
+    # Sur les cotes reellement accoles (mur_mitoyen_bati), le recul lateral tombe
+    # a 0 : l'enveloppe peut s'etendre jusqu'a la limite. Corrige l'emprise absurde
+    # des maisons en bande/mitoyennes (cf. 20 rue du Kiem : 4% -> realiste).
+    party_wall_idxs = {e["idx"] for e in mitoyennete_batie.get("edges", [])
+                       if e.get("mur_mitoyen_bati")}
+    if party_wall_idxs:
+        try:
+            base = calculer_emprise_palladio(
+                parcel_geometry_wgs84=parcel_geometry_wgs84,
+                point_geocode_wgs84=point_geocode_wgs84,
+                recul_avant_m=recul_avant_m,
+                recul_lateral_m=recul_lateral_m,
+                recul_arriere_m=recul_arriere_m,
+                profondeur_max_m=profondeur_max_m,
+                parcelle_id=parcelle_id,
+                party_wall_idxs=party_wall_idxs,
+            )
+            idx_voirie = base["voirie"]["idx"]
+            idx_fond = base["fond"]["idx"]
+        except PalladioError as ex:
+            # On garde l'enveloppe pass-1 si le recalcul degenere (jamais pire)
+            print(f"[palladio bati] WARN recalcul party-wall a echoue, garde pass-1 : {ex}")
+
+    # ---- 4. Plafond COS sur l'emprise au sol ----
     # L'enveloppe geometrique (apres reculs) doit aussi respecter le COS
     # (Coefficient d'Occupation du Sol = part max du terrain couvrable au sol).
     # Emprise legale = min(enveloppe geometrique, terrain x COS_max).
@@ -1689,10 +1770,10 @@ def calculer_palladio_full(
         except (ValueError, TypeError):
             cos_applique = None
 
-    # ---- 3. SCB (sur l'emprise plafonnee COS) ----
+    # ---- 5. SCB (sur l'emprise plafonnee COS) ----
     scb = calculate_scb(emprise_au_sol, zone_pag, surface_terrain_net_m2=surface_terrain)
 
-    # ---- 3. Logements ----
+    # ---- 5. Logements ----
     logements = calculate_logements(
         scb_totale_m2=scb["scb_totale_m2"],
         surface_habitable_m2=scb["surface_habitable_m2"],
@@ -1702,42 +1783,11 @@ def calculer_palladio_full(
         corriger_hab1=corriger_hab1,
     )
 
-    # ---- 4. Parkings ----
+    # ---- 5. Parkings ----
     parkings = calculate_parkings(
         logements["mix_detail"],
         scb_commerce_m2=logements["scb_commerce_m2"],
     )
-
-    # ---- 5. Type de construction (proxy cadastral) ----
-    edges_classified = base["voirie"]["detection"].get("edges_classified", [])
-    all_voirie_edges = base["voirie"]["detection"].get("all_voirie_edges", [])
-    idx_voirie = base["voirie"]["idx"]
-    idx_fond = base["fond"]["idx"]
-    type_construction = detect_construction_type(edges_classified, idx_voirie, idx_fond)
-
-    # ---- 5bis. Mitoyennete batie reelle (Sprint 3, couche batiments) ----
-    # Sortie informative : on detecte les murs mitoyens batis sans encore
-    # modifier les reculs (on valide d'abord que les bons cotes sont detectes).
-    pts_luref_full = _normalize_ring(base["parcelle"]["geometry_luref"]["coordinates"][0])
-    mitoyennete_batie = {"disponible": False, "n_batiments": 0,
-                         "method": "non_tente", "edges": []}
-    try:
-        ring_wgs_cad = _normalize_ring(
-            base["parcelle"]["geometry_wgs84_cadastrale"]["coordinates"][0])
-        bbox_b = _pad_bbox(_bbox_from_ring_wgs84(ring_wgs_cad), BBOX_MARGIN_DEG)
-        buildings = fetch_buildings(bbox_b)
-        parcel_poly_full = Polygon(pts_luref_full)
-        mitoyennete_batie = detect_mitoyennete_batie(
-            pts_luref_full, parcel_poly_full, edges_classified, buildings)
-    except Exception as ex:
-        print(f"[palladio bati] WARN detection mitoyennete batie a echoue : {ex}")
-        mitoyennete_batie = {"disponible": False, "n_batiments": 0,
-                             "method": f"erreur_{type(ex).__name__}", "edges": []}
-    # Diagnostics de decouverte/fetch (debug a distance, retire une fois la collection figee)
-    mitoyennete_batie["diag"] = {
-        "discovery": _BUILDINGS_DISCOVERY_DIAG,
-        "fetch": _BUILDINGS_FETCH_DIAG,
-    }
 
     # ---- 6. Warnings ----
     pts_luref = base["parcelle"]["geometry_luref"]["coordinates"][0]
