@@ -156,4 +156,22 @@ Issues de l'analyse des 3 règlements (PAP QE version coordonnée 19/03/2024, PA
 3. Écrire le prompt d'extraction (un par type de doc) qui sort le JSON du schéma §3, et le tester **sur les 3 PDF de Strassen** (présents dans l'historique de cette session, ou re-téléchargeables) → comparer au §7 pour mesurer la fidélité.
 4. Seulement ensuite : automatiser LOCATE sur 2-3 communes voisines et boucler la validation.
 
+## 9. Limites connues
+
+### 9.1. Casier NQ (COS/CUS/CSS/DL des nouveaux quartiers) — non extractible du texte
+Les valeurs de degré d'utilisation du sol des zones **PAP « nouveau quartier » (NQ)** — COS, CUS, CSS, DL — **ne figurent pas dans la partie écrite du PAG**. Le PAG (Strassen, p.9) le dit explicitement : « Les valeurs maxima […] sont définies pour les zones inscrites en PAP nouveau quartier **dans le casier figurant dans la partie graphique** du plan d'aménagement général. » La partie écrite ne contient que la *légende* du casier (le gabarit vide), pas les valeurs par sous-périmètre.
+
+Conséquence :
+- Aucun outil texte (pdftotext, pdf→md, ou LLM sur le texte) ne récupérera ces valeurs : l'information n'est physiquement pas dans le PDF de la partie écrite. Elle est imprimée dans les cases du casier **sur la carte** (partie graphique).
+- Vérifié sur Strassen : ces valeurs sont **également absentes de l'Airtable rempli à la main**. Ce n'est donc pas un défaut d'extraction mais un trou de source que même le remplissage manuel n'a pas comblé.
+
+**Décision : NQ laissé de côté pour l'instant.** Sans impact sur le cas d'usage immédiat — une parcelle existante relève du régime **QE**, dont tout le dimensionnel est dans le PAP QE (extraction texte fidèle, validée contre l'Airtable Strassen). Le casier NQ ne bloque pas le B2C.
+
+Piste de résolution quand on en aura besoin (chantier séparé) : OCR vision de la **carte** PAG, ou — préférable — vérifier si geoportail expose le `degré d'utilisation du sol` en attributs vectoriels (collection 698 ou voisine). À traiter comme une question de *source de données*, pas de parsing.
+
+### 9.2. PAP QE contextuels (rappel)
+Voir §5.1 : les communes à reculs/hauteurs contextuels (« alignement sur les voisins ») ne sont pas réductibles à des scalaires. Strassen est un cas à valeurs fixes ; ne pas généraliser. À marquer `Methode_reculs=contextuel`.
+
+---
+
 *Fin du briefing.*
