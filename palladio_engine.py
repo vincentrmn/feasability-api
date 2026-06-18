@@ -126,8 +126,16 @@ PROFONDEUR_MARGE_M = 6.0  # marge mini au-dela de recul_avant + recul_arriere
 # Catalogue OGC Features Geoportail (auto-decouverte de la collection batiments)
 GEOPORTAIL_COLLECTIONS_URL = "https://features.geoportail.lu/collections"
 
-# Mots-cles d'identification de la collection batiments dans le catalogue
-BUILDINGS_COLLECTION_KEYWORDS = ("batiment", "building", "immeuble", "bati", "edifice")
+# Collection primaire batiments : 2214 "Periode de construction des batiments"
+# = empreintes au sol de TOUS les batiments du pays (verifie via catalogue OGC
+# Geoportail, 626 collections, exec 882). Les autres collections "batiment" sont
+# thematiques et inadaptees (1881 religieux, 709/x monuments classes).
+GEOPORTAIL_BUILDINGS_COLLECTION_PRIMARY = "2214"
+
+# Mots-cles de fallback si la collection primaire disparait du catalogue.
+# On exclut les pieges thematiques (monuments, religieux, etc.).
+BUILDINGS_COLLECTION_KEYWORDS = ("batiment", "gebaude", "gebäude", "building")
+BUILDINGS_COLLECTION_EXCLUDE = ("monument", "religieu", "class", "inventaire", "archeolog")
 
 # Cache module-level de l'id de collection batiments decouvert
 _BUILDINGS_COLLECTION_ID: Optional[str] = None
@@ -598,23 +606,38 @@ def discover_buildings_collection(timeout: int = NEIGHBORS_HTTP_TIMEOUT_S
         return None
 
     collections = data.get("collections", [])
-    catalogue = []
+    ids = {str(col.get("id") or col.get("name")) for col in collections}
+
     found = None
-    for col in collections:
-        cid = col.get("id") or col.get("name")
-        title = (col.get("title") or "")
-        desc = (col.get("description") or "")
-        catalogue.append({"id": str(cid), "title": title})
-        hay = f"{title.lower()} {desc.lower()} {str(cid).lower()}"
-        if found is None and any(k in hay for k in BUILDINGS_COLLECTION_KEYWORDS):
-            found = str(cid)
-            print(f"[palladio bati] collection batiments decouverte : {found} ({title})")
+    via = None
+    # 1. Collection primaire connue si presente dans le catalogue
+    if GEOPORTAIL_BUILDINGS_COLLECTION_PRIMARY in ids:
+        found = GEOPORTAIL_BUILDINGS_COLLECTION_PRIMARY
+        via = "primaire"
+    else:
+        # 2. Fallback : scan par mots-cles, en excluant les pieges thematiques
+        for col in collections:
+            cid = str(col.get("id") or col.get("name"))
+            title = (col.get("title") or "")
+            desc = (col.get("description") or "")
+            hay = f"{title.lower()} {desc.lower()}"
+            if any(x in hay for x in BUILDINGS_COLLECTION_EXCLUDE):
+                continue
+            if any(k in hay for k in BUILDINGS_COLLECTION_KEYWORDS):
+                found = cid
+                via = "keyword"
+                break
+
+    if found:
+        print(f"[palladio bati] collection batiments retenue : {found} (via {via})")
+    else:
+        print("[palladio bati] WARN aucune collection batiments trouvee dans le catalogue")
 
     _BUILDINGS_DISCOVERY_DIAG = {
         "catalogue_ok": True,
         "n_collections": len(collections),
         "matched": found,
-        "catalogue": catalogue,
+        "via": via,
     }
     if found is None:
         print("[palladio bati] WARN aucune collection batiments trouvee dans le catalogue")
