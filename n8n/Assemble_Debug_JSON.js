@@ -5,6 +5,8 @@ const allRules = $('Lookup Rules Airtable').all().map(item => item.json);
 const palladioResume = $('Build Palladio Payload').first().json._palladio_resume || {};
 const palladioResponse = $input.first().json;
 
+const FORM_URL = 'https://n8n-production-8929d.up.railway.app/webhook/palladio';
+
 let etape5;
 if (palladioResponse && palladioResponse.emprise) {
   etape5 = {
@@ -21,6 +23,7 @@ if (palladioResponse && palladioResponse.emprise) {
     logements: palladioResponse.logements || null,
     parkings: palladioResponse.parkings || null,
     type_construction: palladioResponse.type_construction || null,
+    mitoyennete_batie: palladioResponse.mitoyennete_batie || null,
     warnings: palladioResponse.warnings || [],
   };
 } else {
@@ -35,7 +38,7 @@ if (palladioResponse && palladioResponse.emprise) {
 const debug = {
   meta: {
     workflow: 'Palladio',
-    version: '0.5',
+    version: '0.6',
     timestamp: new Date().toISOString(),
     address_input: geo.adresse,
   },
@@ -73,7 +76,7 @@ function renderPage(d) {
   const e5 = d.etape_5_emprise;
 
   // Parcelle dessinee depuis la geometrie LUREF FUSIONNEE du moteur (faces entieres,
-  // labels coherents avec voirie/fond). LUREF exact, plus d'approximation WGS.
+  // labels coherents avec voirie/fond).
   const ptLuref = e5.voirie.point_luref;
   const parcelLurefPts = e5.parcelle.geometry_luref.coordinates[0].slice(0, -1);
   const empriseLurefPts = e5.emprise.geometry_luref.coordinates[0].slice(0, -1);
@@ -150,8 +153,7 @@ function renderPage(d) {
   const profMax = e5.reculs_envoyes.profondeur_max_m;
   const voirieMethod = (e5.voirie && e5.voirie.method) || 'unknown';
   const voirieDetection = (e5.voirie && e5.voirie.detection) || null;
-
-  const sch1 = `<div class="schema-content schema-text-only"><div class="text-row"><span class="k">Adresse</span><span class="v">${e1.adresse}</span></div><div class="text-row"><span class="k">Numero cadastral</span><span class="v">${e1.parcel_label}</span></div><div class="text-row"><span class="k">Commune / Code postal</span><span class="v">${e1.commune} / ${e1.zip}</span></div><div class="text-row"><span class="k">Point geocode WGS84</span><span class="v mono">[${e1.lon_wgs84.toFixed(7)}, ${e1.lat_wgs84.toFixed(7)}]</span></div><div class="text-row"><span class="k">Point geocode LUREF</span><span class="v mono">[${e1.x_luref.toFixed(2)}, ${e1.y_luref.toFixed(2)}]</span></div><div class="text-row"><span class="k">Precision</span><span class="v">accuracy=${e1.accuracy} (8 = numero de maison), ratio=${e1.ratio}</span></div><div class="text-row"><span class="k">Methode voirie</span><span class="v mono">${voirieMethod}</span></div></div>`;
+  const partyWalls = (e5.emprise && e5.emprise.mitoyennete_batie_appliquee) || [];
 
   const verticesLabels = parcelLurefPts.map((p, i) => {
     const lbl = vertexLabel(i);
@@ -162,17 +164,19 @@ function renderPage(d) {
   ).join('');
   const ptGeocodeSvg = `<circle cx="${projX(ptLuref[0]).toFixed(2)}" cy="${projY(ptLuref[1]).toFixed(2)}" r="0.8" class="dot-geocode"/>`;
 
-  const sch2 = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill"/>${verticesDots}${verticesLabels}${ptGeocodeSvg}</svg><div class="schema-caption">Polygone cadastral en LUREF EPSG:2169. ${parcelLurefPts.length} sommets. Surface <strong>${(polygonArea(parcelLurefPts)).toFixed(1)} m\u00b2</strong>. Point geocode en bleu.</div>`;
+  // --- Schema parcelle ---
+  const schParcelle = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill"/>${verticesDots}${verticesLabels}${ptGeocodeSvg}</svg><div class="schema-caption">Polygone cadastral (LUREF EPSG:2169), ${parcelLurefPts.length} sommets. Surface <strong>${(polygonArea(parcelLurefPts)).toFixed(1)} m²</strong>. Le point bleu est l'adresse géocodée.</div>`;
 
+  // --- Schema detection voirie ---
   const edgesVoirieSvg = parcelLurefPts.map((p, i) => {
     const n = parcelLurefPts.length;
     const a = p;
     const b = parcelLurefPts[(i + 1) % n];
-    const d = distPtSeg(ptLuref[0], ptLuref[1], a[0], a[1], b[0], b[1]);
     const isWinner = (i === idxVoirie);
     const cls = isWinner ? 'edge-voirie-winner' : 'edge-voirie-other';
     const mid = edgeMid(i);
-    return `<line x1="${projX(a[0]).toFixed(2)}" y1="${projY(a[1]).toFixed(2)}" x2="${projX(b[0]).toFixed(2)}" y2="${projY(b[1]).toFixed(2)}" class="${cls}"/><text x="${projX(mid[0]).toFixed(2)}" y="${projY(mid[1]).toFixed(2)}" class="${isWinner ? 'lbl-edge-winner' : 'lbl-edge'}">${d.toFixed(1)}m</text>`;
+    const dd = distPtSeg(ptLuref[0], ptLuref[1], a[0], a[1], b[0], b[1]);
+    return `<line x1="${projX(a[0]).toFixed(2)}" y1="${projY(a[1]).toFixed(2)}" x2="${projX(b[0]).toFixed(2)}" y2="${projY(b[1]).toFixed(2)}" class="${cls}"/><text x="${projX(mid[0]).toFixed(2)}" y="${projY(mid[1]).toFixed(2)}" class="${isWinner ? 'lbl-edge-winner' : 'lbl-edge'}">${dd.toFixed(1)}m</text>`;
   }).join('');
   const aWin = parcelLurefPts[idxVoirie];
   const bWin = parcelLurefPts[(idxVoirie + 1) % parcelLurefPts.length];
@@ -184,17 +188,18 @@ function renderPage(d) {
     cadastralOverlay = voirieDetection.edges_classified.map(ec => {
       const ax = projX(ec.p1[0]).toFixed(2), ay = projY(ec.p1[1]).toFixed(2);
       const bx = projX(ec.p2[0]).toFixed(2), by = projY(ec.p2[1]).toFixed(2);
-      const color = ec.is_voirie ? '#c9a961' : '#888';
+      const color = ec.is_voirie ? '#c9a961' : '#bbb';
       const width = ec.is_voirie ? '1.5' : '0.6';
       return `<line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="${color}" stroke-width="${width}" fill="none"/>`;
     }).join('');
     const nbVoirie = voirieDetection.edges_classified.filter(e => e.is_voirie).length;
     const totalVoirieLen = voirieDetection.edges_classified.filter(e => e.is_voirie).reduce((s, e) => s + e.length_m, 0);
-    cadastralCaption = ` Detection cadastrale: <strong>${nbVoirie}</strong> arete(s) voirie sur ${voirieDetection.edges_classified.length}, soit <strong>${totalVoirieLen.toFixed(1)}m</strong>. ${voirieDetection.n_neighbors_fetched} voisines fetched (${voirieDetection.n_neighbors_public} publiques). ${voirieDetection.fallback_used ? 'Fallback: ' + voirieDetection.fallback_used : 'OK'}.`;
+    cadastralCaption = ` Les arêtes en ambre touchent le domaine public : <strong>${nbVoirie}</strong> sur ${voirieDetection.edges_classified.length} (${totalVoirieLen.toFixed(1)} m de façade rue).`;
   }
 
-  const sch3 = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-light"/>${edgesVoirieSvg}${cadastralOverlay}${verticesLabels}<line x1="${projX(ptLuref[0]).toFixed(2)}" y1="${projY(ptLuref[1]).toFixed(2)}" x2="${projX(winMid[0]).toFixed(2)}" y2="${projY(winMid[1]).toFixed(2)}" class="line-perp"/>${ptGeocodeSvg}</svg><div class="schema-caption">Distance du point geocode (bleu) a chaque arete. <strong>Arete ${e5.voirie.edge_label}</strong> retenue comme voirie.${cadastralCaption}</div>`;
+  const schVoirie = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-light"/>${edgesVoirieSvg}${cadastralOverlay}${verticesLabels}<line x1="${projX(ptLuref[0]).toFixed(2)}" y1="${projY(ptLuref[1]).toFixed(2)}" x2="${projX(winMid[0]).toFixed(2)}" y2="${projY(winMid[1]).toFixed(2)}" class="line-perp"/>${ptGeocodeSvg}</svg><div class="schema-caption">Distance du point d'adresse à chaque côté. La façade sur rue retenue est l'arête <strong>${e5.voirie.edge_label}</strong>.${cadastralCaption}</div>`;
 
+  // --- Schema candidats fond ---
   const cands = e5.fond.candidats;
   const candColors = ['#222', '#555', '#888'];
   const candsSvg = cands.map((c, k) => {
@@ -208,28 +213,64 @@ function renderPage(d) {
     return `<line x1="${projX(a[0]).toFixed(2)}" y1="${projY(a[1]).toFixed(2)}" x2="${projX(b[0]).toFixed(2)}" y2="${projY(b[1]).toFixed(2)}" stroke="${stroke}" stroke-width="${width}" stroke-dasharray="${dash}" fill="none"/>`;
   }).join('');
   const voirieLine = `<line x1="${projX(aWin[0]).toFixed(2)}" y1="${projY(aWin[1]).toFixed(2)}" x2="${projX(bWin[0]).toFixed(2)}" y2="${projY(bWin[1]).toFixed(2)}" stroke="#c00" stroke-width="2.5" fill="none"/>`;
-
   const candsLegend = cands.map((c, k) => {
     const isChosen = (c.idx_fond === idxFond);
-    return `<div class="cand-row ${isChosen ? 'cand-chosen' : ''}"><span class="cand-label">${c.fond_label}</span><span class="cand-score">score ${c.score_fond}</span><span class="cand-surf">${c.surface_emprise_m2.toFixed(1)} m\u00b2</span>${isChosen ? '<span class="cand-pick">retenu</span>' : ''}</div>`;
+    return `<div class="cand-row ${isChosen ? 'cand-chosen' : ''}"><span class="cand-label">${c.fond_label}</span><span class="cand-score">score ${c.score_fond}</span><span class="cand-surf">${c.surface_emprise_m2.toFixed(1)} m²</span>${isChosen ? '<span class="cand-pick">retenu</span>' : ''}</div>`;
   }).join('');
+  const schFond = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-light"/>${candsSvg}${voirieLine}${verticesLabels}</svg><div class="schema-caption">On teste les côtés candidats pour le fond. <strong>${e5.fond.edge_label}</strong> est retenu. La façade rue ${e5.voirie.edge_label} est en rouge.</div><div class="cand-list">${candsLegend}</div>`;
 
-  const sch4 = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-light"/>${candsSvg}${voirieLine}${verticesLabels}</svg><div class="schema-caption">Top-3 candidats arete-fond. <strong>${e5.fond.edge_label}</strong> retenue. Voirie ${e5.voirie.edge_label} en rouge.</div><div class="cand-list">${candsLegend}</div>`;
+  // --- Schema mitoyennete batie (Sprint 3) ---
+  const mito = e5.mitoyennete_batie;
+  let schMito;
+  if (mito && mito.edges && mito.edges.length) {
+    const mitoEdgesSvg = parcelLurefPts.map((p, i) => {
+      const n = parcelLurefPts.length;
+      const a = p;
+      const b = parcelLurefPts[(i + 1) % n];
+      const isParty = partyWalls.indexOf(i) !== -1;
+      const isVoirie = (i === idxVoirie);
+      const color = isParty ? '#e08a2e' : (isVoirie ? '#2962ff' : '#ccc');
+      const width = isParty ? '1.8' : (isVoirie ? '1' : '0.5');
+      let lbl = '';
+      if (isParty) {
+        const mid = edgeMid(i);
+        lbl = `<text x="${projX(mid[0]).toFixed(2)}" y="${projY(mid[1]).toFixed(2)}" class="lbl-mito">mur mitoyen</text>`;
+      }
+      return `<line x1="${projX(a[0]).toFixed(2)}" y1="${projY(a[1]).toFixed(2)}" x2="${projX(b[0]).toFixed(2)}" y2="${projY(b[1]).toFixed(2)}" stroke="${color}" stroke-width="${width}" fill="none"/>${lbl}`;
+    }).join('');
+    const nMurs = mito.n_murs_mitoyens_batis || 0;
+    const detailMito = mito.edges.filter(x => x.mur_mitoyen_bati)
+      .map(x => `${x.label} (${x.overlap_bati_m} m de mur)`).join(', ');
+    schMito = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-light"/>${mitoEdgesSvg}${verticesLabels}</svg><div class="schema-caption">${mito.n_batiments} bâtiment(s) voisin(s) analysé(s). <strong>${nMurs}</strong> mur(s) mitoyen(s) bâti(s) détecté(s)${detailMito ? ' : ' + detailMito : ''}. Les côtés en orange passent en recul 0.</div>`;
+  } else {
+    schMito = `<div class="schema-content"><div class="schema-caption">Détection de mitoyenneté bâtie indisponible pour cette parcelle.</div></div>`;
+  }
 
+  // --- Schema reculs lateraux (avec recul 0 sur murs mitoyens) ---
   const lateralCotsSvg = parcelLurefPts.map((p, i) => {
     if (i === idxVoirie || i === idxFond) return '';
+    const isParty = partyWalls.indexOf(i) !== -1;
+    if (isParty) {
+      const a = p, b = parcelLurefPts[(i + 1) % parcelLurefPts.length];
+      return `<line x1="${projX(a[0]).toFixed(2)}" y1="${projY(a[1]).toFixed(2)}" x2="${projX(b[0]).toFixed(2)}" y2="${projY(b[1]).toFixed(2)}" class="edge-mitoyen"/>`;
+    }
     const offset = edgeOffsetInward(i, rl, 0);
     return `<line x1="${projX(offset[0][0]).toFixed(2)}" y1="${projY(offset[0][1]).toFixed(2)}" x2="${projX(offset[1][0]).toFixed(2)}" y2="${projY(offset[1][1]).toFixed(2)}" class="line-recul-lateral"/>`;
   }).join('');
   const lateralLabels = parcelLurefPts.map((p, i) => {
     if (i === idxVoirie || i === idxFond) return '';
+    const isParty = partyWalls.indexOf(i) !== -1;
+    const mid = edgeMid(i);
+    if (isParty) {
+      return `<text x="${projX(mid[0]).toFixed(2)}" y="${projY(mid[1]).toFixed(2)}" class="lbl-mito">mitoyen 0m</text>`;
+    }
     const offset = edgeOffsetInward(i, rl, 0);
-    const mid = [(offset[0][0] + offset[1][0]) / 2, (offset[0][1] + offset[1][1]) / 2];
-    return `<text x="${projX(mid[0]).toFixed(2)}" y="${projY(mid[1]).toFixed(2)}" class="lbl-recul">${rl}m</text>`;
+    const omid = [(offset[0][0] + offset[1][0]) / 2, (offset[0][1] + offset[1][1]) / 2];
+    return `<text x="${projX(omid[0]).toFixed(2)}" y="${projY(omid[1]).toFixed(2)}" class="lbl-recul">${rl}m</text>`;
   }).join('');
+  const schLateral = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-light"/>${lateralCotsSvg}${lateralLabels}${verticesLabels}</svg><div class="schema-caption">Reculs latéraux : <strong>${rl} m</strong> de chaque côté${partyWalls.length ? `, sauf sur le(s) côté(s) mitoyen(s) en orange où le recul tombe à <strong>0</strong>` : ''}.</div>`;
 
-  const sch5 = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-light"/>${lateralCotsSvg}${lateralLabels}${verticesLabels}</svg><div class="schema-caption">Etape 1 du moteur : <code>buffer(-${rl}m)</code> applique uniformement aux aretes laterales.</div>`;
-
+  // --- Schema reculs avant / arriere / profondeur ---
   const cotAvant = edgeOffsetInward(idxVoirie, ra, 0);
   const cotArriere = edgeOffsetInward(idxFond, rr, 0);
   let cotProfMax = '';
@@ -240,26 +281,23 @@ function renderPage(d) {
   }
   const midAvant = [(cotAvant[0][0] + cotAvant[1][0]) / 2, (cotAvant[0][1] + cotAvant[1][1]) / 2];
   const midArriere = [(cotArriere[0][0] + cotArriere[1][0]) / 2, (cotArriere[0][1] + cotArriere[1][1]) / 2];
+  const schAvAr = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-light"/><line x1="${projX(aWin[0]).toFixed(2)}" y1="${projY(aWin[1]).toFixed(2)}" x2="${projX(bWin[0]).toFixed(2)}" y2="${projY(bWin[1]).toFixed(2)}" class="edge-voirie-thick"/><line x1="${projX(parcelLurefPts[idxFond][0]).toFixed(2)}" y1="${projY(parcelLurefPts[idxFond][1]).toFixed(2)}" x2="${projX(parcelLurefPts[(idxFond+1) % parcelLurefPts.length][0]).toFixed(2)}" y2="${projY(parcelLurefPts[(idxFond+1) % parcelLurefPts.length][1]).toFixed(2)}" class="edge-fond-thick"/><line x1="${projX(cotAvant[0][0]).toFixed(2)}" y1="${projY(cotAvant[0][1]).toFixed(2)}" x2="${projX(cotAvant[1][0]).toFixed(2)}" y2="${projY(cotAvant[1][1]).toFixed(2)}" class="line-recul-avant"/><text x="${projX(midAvant[0]).toFixed(2)}" y="${projY(midAvant[1]).toFixed(2)}" class="lbl-recul-avant">avant ${ra}m</text><line x1="${projX(cotArriere[0][0]).toFixed(2)}" y1="${projY(cotArriere[0][1]).toFixed(2)}" x2="${projX(cotArriere[1][0]).toFixed(2)}" y2="${projY(cotArriere[1][1]).toFixed(2)}" class="line-recul-arriere"/><text x="${projX(midArriere[0]).toFixed(2)}" y="${projY(midArriere[1]).toFixed(2)}" class="lbl-recul-arriere">arriere ${rr}m</text>${cotProfMax}${verticesLabels}</svg><div class="schema-caption">Recul avant de <strong>${ra} m</strong> depuis la rue (${e5.voirie.edge_label}), recul arrière de <strong>${rr} m</strong> depuis le fond (${e5.fond.edge_label})${profMax ? `, et profondeur bâtie limitée à ${ra + profMax} m depuis la rue` : ''}.</div>`;
 
-  const sch6 = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-light"/><line x1="${projX(aWin[0]).toFixed(2)}" y1="${projY(aWin[1]).toFixed(2)}" x2="${projX(bWin[0]).toFixed(2)}" y2="${projY(bWin[1]).toFixed(2)}" class="edge-voirie-thick"/><line x1="${projX(parcelLurefPts[idxFond][0]).toFixed(2)}" y1="${projY(parcelLurefPts[idxFond][1]).toFixed(2)}" x2="${projX(parcelLurefPts[(idxFond+1) % parcelLurefPts.length][0]).toFixed(2)}" y2="${projY(parcelLurefPts[(idxFond+1) % parcelLurefPts.length][1]).toFixed(2)}" class="edge-fond-thick"/><line x1="${projX(cotAvant[0][0]).toFixed(2)}" y1="${projY(cotAvant[0][1]).toFixed(2)}" x2="${projX(cotAvant[1][0]).toFixed(2)}" y2="${projY(cotAvant[1][1]).toFixed(2)}" class="line-recul-avant"/><text x="${projX(midAvant[0]).toFixed(2)}" y="${projY(midAvant[1]).toFixed(2)}" class="lbl-recul-avant">avant ${ra}m</text><line x1="${projX(cotArriere[0][0]).toFixed(2)}" y1="${projY(cotArriere[0][1]).toFixed(2)}" x2="${projX(cotArriere[1][0]).toFixed(2)}" y2="${projY(cotArriere[1][1]).toFixed(2)}" class="line-recul-arriere"/><text x="${projX(midArriere[0]).toFixed(2)}" y="${projY(midArriere[1]).toFixed(2)}" class="lbl-recul-arriere">arriere ${rr}m</text>${cotProfMax}${verticesLabels}</svg><div class="schema-caption">Demi-plan avant (recul ${ra}m depuis voirie ${e5.voirie.edge_label}), demi-plan arriere (recul ${rr}m depuis fond ${e5.fond.edge_label})${profMax ? ', clip a ' + (ra + profMax) + 'm de profondeur max' : ''}.</div>`;
+  // --- Schema emprise finale ---
+  const schEmprise = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-final"/><polygon points="${pts2svg(empriseLurefPts)}" class="emprise-fill"/>${verticesLabels}</svg><div class="schema-caption">La zone noire est l'emprise constructible : <strong>${e5.emprise.surface_m2} m²</strong> (${e5.emprise.nb_sommets} sommets) sur un terrain de <strong>${polygonArea(parcelLurefPts).toFixed(1)} m²</strong>, soit <strong>${(e5.emprise.ratio_vs_cadastrale * 100).toFixed(1)}%</strong>.</div>`;
 
-  const sch7 = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-final"/><polygon points="${pts2svg(empriseLurefPts)}" class="emprise-fill"/>${verticesLabels}</svg><div class="schema-caption">Resultat final : enveloppe constructible <strong>${e5.emprise.surface_m2} m\u00b2</strong> (${e5.emprise.nb_sommets} sommets) sur parcelle de <strong>${polygonArea(parcelLurefPts).toFixed(1)} m\u00b2</strong>. Ratio constructible <strong>${(e5.emprise.ratio_vs_cadastrale * 100).toFixed(1)}%</strong>.</div>`;
-
-  // ===== Sprint 2 : schemas metier 08-11 =====
+  // --- Schemas metier (texte) ---
   const scb = e5.scb;
-  const sch8 = scb ? `<div class="schema-content schema-text-only">${scb.ventilation_par_niveau.map(v => `<div class="text-row"><span class="k">${v.niveau}</span><span class="v mono">${v.scb_m2} m²</span></div>`).join('')}<div class="text-row"><span class="k">SCB totale</span><span class="v"><strong>${scb.scb_totale_m2} m²</strong></span></div><div class="text-row"><span class="k">Surface habitable</span><span class="v">${scb.surface_habitable_m2} m² (SCB × 0.80)</span></div>${scb.cus_applique ? `<div class="text-row"><span class="k">Plafond CUS</span><span class="v">${scb.cus_applique.scb_max_cus_m2} m² ${scb.cus_applique.limitant ? '⚠ limitant' : 'OK'}</span></div>` : ''}</div><div class="schema-caption">Emprise au sol ${scb.emprise_au_sol_m2} m² × ${scb.niveaux_pleins} niveaux${scb.combles ? ' + combles (60% emprise)' : ''}.</div>` : `<div class="schema-caption">Indisponible (endpoint /calcul sans couche metier).</div>`;
+  const schScb = scb ? `<div class="schema-content">${scb.ventilation_par_niveau.map(v => `<div class="text-row"><span class="k">${v.niveau}</span><span class="v mono">${v.scb_m2} m²</span></div>`).join('')}<div class="text-row"><span class="k">SCB totale</span><span class="v"><strong>${scb.scb_totale_m2} m²</strong></span></div><div class="text-row"><span class="k">Surface habitable</span><span class="v">${scb.surface_habitable_m2} m² (SCB × 0,80)</span></div>${scb.cus_applique ? `<div class="text-row"><span class="k">Plafond densité (CUS)</span><span class="v">${scb.cus_applique.scb_max_cus_m2} m² ${scb.cus_applique.limitant ? '⚠ limitant' : 'OK'}</span></div>` : ''}</div>` : '';
 
   const lg = e5.logements;
   const pk = e5.parkings;
   const mixRows = (lg && lg.mix_detail) ? Object.entries(lg.mix_detail).map(([t, m]) => `<div class="text-row"><span class="k">${t}</span><span class="v">${m.nb} × ${m.shn_m2} m² SHN</span></div>`).join('') : '';
-  const sch9 = lg ? `<div class="schema-content schema-text-only"><div class="text-row"><span class="k">Logements</span><span class="v"><strong>${lg.nb_logements}</strong></span></div>${mixRows}<div class="text-row"><span class="k">Moyenne SHN</span><span class="v">${lg.surface_moyenne_shn_m2} m²</span></div>${pk ? `<div class="text-row"><span class="k">Parkings auto</span><span class="v">${pk.auto_min} a ${pk.auto_max}</span></div><div class="text-row"><span class="k">Parkings velo</span><span class="v">${pk.velo}</span></div><div class="text-row"><span class="k">Surface SS estimee</span><span class="v">${pk.surface_sous_sol_estimee_m2} m²</span></div>` : ''}</div><div class="schema-caption">${(lg.contraintes && lg.contraintes.length) ? lg.contraintes.join(' · ') : 'Aucune contrainte logement.'}${(lg.hab1 && lg.hab1.corrige) ? ' · HAB-1 corrige' : ' · fidele main.py (HAB-1)'}</div>` : `<div class="schema-caption">Indisponible.</div>`;
-
-  const tc = e5.type_construction;
-  const sch10 = tc ? `<div class="schema-content schema-text-only"><div class="text-row"><span class="k">Type</span><span class="v"><strong>${tc.type}</strong></span></div><div class="text-row"><span class="k">Mitoyennetes laterales</span><span class="v">${tc.n_mitoyens != null ? tc.n_mitoyens : '?'} sur ${tc.n_lateraux != null ? tc.n_lateraux : '?'} laterales</span></div><div class="text-row"><span class="k">Methode</span><span class="v mono">${tc.method}</span></div><div class="text-row"><span class="k">Confiance</span><span class="v">${tc.confiance || '?'}</span></div></div><div class="schema-caption">Proxy d'adjacence cadastrale (Sprint 1.5) : adjacence fonciere, pas mitoyennete batie reelle.</div>` : `<div class="schema-caption">Indisponible.</div>`;
+  const schLog = lg ? `<div class="schema-content"><div class="text-row"><span class="k">Logements</span><span class="v"><strong>${lg.nb_logements}</strong></span></div>${mixRows}<div class="text-row"><span class="k">Moyenne par logement</span><span class="v">${lg.surface_moyenne_shn_m2} m² habitables</span></div>${pk ? `<div class="text-row"><span class="k">Parkings voiture</span><span class="v">${pk.auto_min} à ${pk.auto_max}</span></div><div class="text-row"><span class="k">Parkings vélo</span><span class="v">${pk.velo}</span></div>` : ''}</div>` : '';
 
   const wn = e5.warnings || [];
   const lvlColor = { info: '#2962ff', warning: '#c9a961', critique: '#c00' };
-  const sch11 = `<div class="schema-content">${wn.length ? wn.map(w => `<div style="display:flex;gap:12px;align-items:baseline;padding:8px 0;border-bottom:1px solid #f0f0f0"><span style="font-family:ui-monospace,monospace;font-size:11px;text-transform:uppercase;color:#fff;background:${lvlColor[w.level] || '#888'};padding:2px 6px;border-radius:3px">${w.level}</span><span style="font-family:ui-monospace,monospace;font-size:12px;color:#888;min-width:210px">${w.code}${w.edge ? ' (' + w.edge + ')' : ''}</span><span style="font-size:13px;color:#111">${w.message_fr}</span></div>`).join('') : '<div class="schema-caption">Aucun warning.</div>'}</div>`;
+  const schWarn = `<div class="schema-content">${wn.length ? wn.map(w => `<div class="warn-row"><span class="warn-lvl" style="background:${lvlColor[w.level] || '#888'}">${w.level}</span><span class="warn-code">${w.code}${w.edge ? ' (' + w.edge + ')' : ''}</span><span class="warn-msg">${w.message_fr}</span></div>`).join('') : '<div class="schema-caption">Aucun point de vigilance.</div>'}</div>`;
 
   const ruleMatch = e4.matches.length > 0 ? e4.matches[0].fields : {};
   const cos = ruleMatch.COS_max || '?';
@@ -267,63 +305,66 @@ function renderPage(d) {
   const hFaite = ruleMatch.Hauteur_faite_max_m || '?';
   const hCorniche = ruleMatch.Hauteur_corniche_max_m || '?';
 
-  // ===== Methode expliquee (pedagogique, pour un lecteur non-initie) =====
+  // ===== Textes pedagogiques =====
   const fmt = (x) => (x == null ? '?' : Math.round(x).toLocaleString('fr-FR'));
   const terrain = (e5.parcelle && e5.parcelle.surface_cadastrale_m2) || polygonArea(parcelLurefPts);
   const empriseM2 = e5.emprise.surface_m2;
   const ratioPct = (e5.emprise.ratio_vs_cadastrale * 100).toFixed(0);
   const nomZone = ruleMatch.Nom_zone || e3.code_zone;
   const cusInfo = (scb && scb.cus_applique) ? scb.cus_applique : null;
+  const tc = e5.type_construction;
 
-  function methodStep(num, titre, corps) {
-    return `<div class="method-step"><div class="method-num">${num}</div><div class="method-body"><div class="method-title">${titre}</div><div class="method-text">${corps}</div></div></div>`;
+  const txtParcelle = `À partir de l'adresse <strong>${e1.adresse}</strong>, on identifie le terrain au cadastre : parcelle <strong>${e1.parcel_label}</strong>, d'une surface de <strong>${fmt(terrain)} m²</strong>.`;
+
+  let reglesLi = `<li>Recul avant (distance entre la rue et la maison) : <strong>${ra} m</strong></li>`
+    + `<li>Reculs latéraux (de chaque côté) : <strong>${rl} m</strong></li>`
+    + `<li>Recul arrière (vers le fond) : <strong>${rr} m</strong></li>`;
+  if (scb) reglesLi += `<li>Hauteur autorisée : <strong>${scb.niveaux_pleins} niveaux${scb.combles ? ' + combles aménageables' : ''}</strong></li>`;
+  if (cos !== '?') reglesLi += `<li>COS (part du terrain qu'on peut couvrir au sol) : <strong>${cos}</strong></li>`;
+  if (css !== '?') reglesLi += `<li>CUS (total de plancher autorisé par m² de terrain) : <strong>${css}</strong></li>`;
+  const txtRegles = `Votre terrain est classé en zone <strong>${e3.code_zone}</strong> (${nomZone}) au PAG, le <em>Plan d'Aménagement Général</em> : le règlement communal qui décide ce qu'on a le droit de construire. Voici ce qu'il impose ici :<ul>${reglesLi}</ul>`;
+
+  const txtRueFond = `Pour orienter le bâtiment, on repère le côté qui donne sur la rue (la <em>voirie</em>) et le côté du fond. La façade sur rue est l'arête <strong>${e5.voirie.edge_label}</strong>${voirieMethod === 'cadastral_adjacency_v0.2' ? ', détectée en regardant quelles limites de la parcelle touchent le domaine public' : ', détectée par proximité du point d\'adresse'}. Le fond retenu est <strong>${e5.fond.edge_label}</strong>.`;
+
+  let txtMito;
+  if (mito && mito.edges && mito.edges.length) {
+    txtMito = `On regarde les bâtiments voisins. Quand une maison voisine est déjà collée à la limite de votre terrain (un <em>mur mitoyen</em>), vous avez le droit de bâtir contre cette même limite, sans recul. On détecte ces murs grâce à la couche des bâtiments du cadastre.`;
+    if (partyWalls.length) {
+      txtMito += ` Ici, <strong>${partyWalls.length} côté${partyWalls.length > 1 ? 's sont concernés' : ' est concerné'}</strong> : le recul latéral y passe à <strong>0</strong>, ce qui agrandit la surface constructible.`;
+    } else {
+      txtMito += ` Ici, <strong>aucun mur mitoyen bâti</strong> n'a été détecté : les reculs latéraux normaux s'appliquent des deux côtés.`;
+    }
+    if (tc && tc.type) txtMito += ` Type de construction estimé : <strong>${tc.type.replace(/_/g, ' ')}</strong>.`;
+  } else {
+    txtMito = `La détection des murs mitoyens bâtis n'est pas disponible pour cette parcelle ; les reculs latéraux standards s'appliquent.`;
   }
 
-  let etapesHtml = '';
-  etapesHtml += methodStep(1, 'On retrouve votre parcelle',
-    `À partir de l'adresse <strong>${e1.adresse}</strong>, on identifie le terrain au cadastre : parcelle <strong>${e1.parcel_label}</strong>. Sa surface est de <strong>${fmt(terrain)} m²</strong>.`);
+  const txtPlacement = `On part des <strong>${fmt(terrain)} m²</strong> du terrain et on retire les bandes où il est interdit de bâtir : ${ra} m le long de la rue, ${rl} m sur chaque côté (sauf murs mitoyens), et ${rr} m au fond. La surface réellement constructible au sol — l'<em>emprise au sol</em> — est de <strong>${fmt(empriseM2)} m²</strong>, soit <strong>${ratioPct} %</strong> du terrain.`;
 
-  let reglesLi = `<li>Recul avant (distance à laisser entre la rue et la maison) : <strong>${ra} m</strong></li>`
-    + `<li>Reculs latéraux (de chaque côté) : <strong>${rl} m</strong></li>`
-    + `<li>Recul arrière (vers le fond de parcelle) : <strong>${rr} m</strong></li>`;
-  if (scb) reglesLi += `<li>Hauteur autorisée : <strong>${scb.niveaux_pleins} niveaux${scb.combles ? ' + combles aménageables' : ''}</strong></li>`;
-  if (cos !== '?') reglesLi += `<li>COS (Coefficient d'Occupation du Sol — part du terrain qu'on peut couvrir au sol) : <strong>${cos}</strong></li>`;
-  if (css !== '?') reglesLi += `<li>CUS (Coefficient d'Utilisation du Sol — total de plancher autorisé par m² de terrain) : <strong>${css}</strong></li>`;
-  etapesHtml += methodStep(2, "Les règles d'urbanisme de votre zone",
-    `Votre terrain est classé en zone <strong>${e3.code_zone}</strong> (${nomZone}) au PAG — le <em>Plan d'Aménagement Général</em>, c'est-à-dire le règlement de la commune qui décide ce qu'on a le droit de construire. Voici ce qu'il impose ici :<ul class="method-list">${reglesLi}</ul>`);
-
-  etapesHtml += methodStep(3, "Où peut-on poser le bâtiment ?",
-    `On part des <strong>${fmt(terrain)} m²</strong> du terrain et on retire les bandes où il est interdit de bâtir : ${ra} m le long de la rue (façade <strong>${e5.voirie.edge_label}</strong>), ${rl} m sur chaque côté, et ${rr} m au fond (<strong>${e5.fond.edge_label}</strong>). La surface qui reste réellement constructible au sol — l'<em>emprise au sol</em> — est de <strong>${fmt(empriseM2)} m²</strong>, soit <strong>${ratioPct} %</strong> du terrain.`);
-
+  let txtScb = '';
   if (scb) {
     let nivLi = `<li>Rez-de-chaussée : ${fmt(empriseM2)} m²</li>`;
     for (let k = 1; k < scb.niveaux_pleins; k++) nivLi += `<li>${k}${k === 1 ? 'ᵉʳ' : 'ᵉ'} étage : ${fmt(empriseM2)} m²</li>`;
-    if (scb.combles) nivLi += `<li>Combles (comptés à 60 % car sous pente) : ${fmt(empriseM2)} × 0,60 = ${fmt(scb.scb_combles_m2)} m²</li>`;
+    if (scb.combles) nivLi += `<li>Combles (comptés à 60 % car sous pente) : ${fmt(scb.scb_combles_m2)} m²</li>`;
     const brute = scb.scb_niveaux_m2 + scb.scb_combles_m2;
-    let corps4 = `On empile les niveaux autorisés. La somme des planchers s'appelle la <strong>SCB</strong> (<em>Surface Construite Brute</em>) :<ul class="method-list">${nivLi}</ul>Total = <strong>${fmt(brute)} m²</strong>.`;
+    txtScb = `On empile les niveaux autorisés. La somme des planchers s'appelle la <strong>SCB</strong> (<em>Surface Construite Brute</em>) :<ul>${nivLi}</ul>Total = <strong>${fmt(brute)} m²</strong>.`;
     if (cusInfo && cusInfo.limitant) {
-      corps4 += ` Mais la zone plafonne la densité : au maximum ${fmt(terrain)} m² × ${cusInfo.cus_max} = <strong>${fmt(cusInfo.scb_max_cus_m2)} m²</strong>. C'est inférieur, donc on retient ce plafond : <strong>${fmt(cusInfo.scb_max_cus_m2)} m²</strong>.`;
+      txtScb += ` Mais la zone plafonne la densité à ${fmt(terrain)} m² × ${cusInfo.cus_max} = <strong>${fmt(cusInfo.scb_max_cus_m2)} m²</strong> : c'est inférieur, donc on retient ce plafond.`;
     } else if (cusInfo) {
-      corps4 += ` Le plafond de densité (${fmt(cusInfo.scb_max_cus_m2)} m²) n'est pas atteint, on garde <strong>${fmt(scb.scb_totale_m2)} m²</strong>.`;
+      txtScb += ` Le plafond de densité (${fmt(cusInfo.scb_max_cus_m2)} m²) n'est pas atteint, on garde <strong>${fmt(scb.scb_totale_m2)} m²</strong>.`;
     }
-    etapesHtml += methodStep(4, "Combien de surface de plancher au total ?", corps4);
   }
 
+  let txtLog = '';
   if (lg) {
-    let corps5;
     if (lg.nb_logements > 0) {
-      corps5 = `On réserve une partie de la surface aux logements (le reste, s'il y a du commerce, va au rez-de-chaussée). En comptant un logement moyen d'environ 75 m², on estime <strong>${lg.nb_logements} logement${lg.nb_logements > 1 ? 's' : ''}</strong>`;
-      if (lg.scb_commerce_m2 > 0) corps5 += ` + un commerce en rez-de-chaussée (zone mixte)`;
-      corps5 += `.`;
+      txtLog = `En comptant un logement moyen d'environ 75 m², on estime <strong>${lg.nb_logements} logement${lg.nb_logements > 1 ? 's' : ''}</strong>`;
+      if (lg.scb_commerce_m2 > 0) txtLog += ` + un commerce en rez-de-chaussée (zone mixte)`;
+      txtLog += `.`;
     } else {
-      corps5 = `Cette zone n'autorise pas le logement (ou la surface est insuffisante) : <strong>aucun logement</strong>.`;
+      txtLog = `Cette zone n'autorise pas le logement (ou la surface est insuffisante) : <strong>aucun logement</strong>.`;
     }
-    etapesHtml += methodStep(5, "Combien de logements ?", corps5);
-  }
-
-  if (pk) {
-    etapesHtml += methodStep(6, "Combien de places de stationnement ?",
-      `Le règlement impose un nombre de places selon la taille des logements${(lg && lg.scb_commerce_m2 > 0) ? ' et la surface de commerce' : ''} : <strong>${pk.auto_min} à ${pk.auto_max} places voiture</strong> et <strong>${pk.velo} emplacements vélo</strong>.`);
+    if (pk) txtLog += ` Le règlement impose <strong>${pk.auto_min} à ${pk.auto_max} places voiture</strong> et <strong>${pk.velo} emplacement${pk.velo > 1 ? 's' : ''} vélo</strong>.`;
   }
 
   let synthese = `Sur ce terrain de <strong>${fmt(terrain)} m²</strong>, on peut bâtir une emprise au sol de <strong>${fmt(empriseM2)} m²</strong>`;
@@ -332,17 +373,97 @@ function renderPage(d) {
   if (lg && lg.scb_commerce_m2 > 0) synthese += ` + un commerce`;
   if (pk) synthese += `, avec <strong>${pk.auto_min}-${pk.auto_max} places de parking</strong>`;
   synthese += `.`;
-  etapesHtml += methodStep(7, "En résumé", synthese);
 
-  const methodeHtml = `<section class="method"><h2 class="method-h2">Comment on arrive à ce résultat</h2><div class="method-steps">${etapesHtml}</div></section>`;
+  // ===== Sections : chaque explication suivie de son schema =====
+  function section(num, title, text, schema) {
+    return `<section class="section"><div class="section-head"><span class="section-num">${num}</span><span class="section-title">${title}</span></div>`
+      + (text ? `<div class="section-text">${text}</div>` : '')
+      + (schema ? `<div class="schema">${schema}</div>` : '')
+      + `</section>`;
+  }
 
-  const bandeauHtml = `<header class="bandeau"><h1>Palladio \u00b7 debug</h1><div class="bandeau-meta">v${d.meta.version} \u00b7 ${d.meta.timestamp.slice(0, 16).replace('T', ' ')} \u00b7 voirie: ${voirieMethod}</div><div class="bandeau-grid"><div class="info-block"><div class="info-label">Adresse</div><div class="info-value">${e1.adresse}</div><div class="info-sub">${e1.parcel_label}</div></div><div class="info-block"><div class="info-label">Zone PAG</div><div class="info-value">${e3.code_zone}</div><div class="info-sub">${ruleMatch.Nom_zone || ''} \u00b7 ${ruleMatch.PAP_QE || ''}</div></div><div class="info-block"><div class="info-label">Reculs appliques</div><div class="info-value">${ra} / ${rl} / ${rr} m</div><div class="info-sub">avant / lateral / arriere \u00b7 prof max ${profMax}m</div></div><div class="info-block"><div class="info-label">Constructibilite</div><div class="info-value">COS ${cos} \u00b7 CSS ${css}</div><div class="info-sub">h corniche ${hCorniche}m \u00b7 h faite ${hFaite}m</div></div><div class="info-block info-result"><div class="info-label">Emprise calculee</div><div class="info-value-big">${e5.emprise.surface_m2} m\u00b2</div><div class="info-sub">${(e5.emprise.ratio_vs_cadastrale * 100).toFixed(1)}% de la parcelle \u00b7 ${e5.emprise.nb_sommets} sommets</div></div></div></header>`;
+  let n = 0;
+  let sectionsHtml = '';
+  sectionsHtml += section(++n, 'On retrouve votre parcelle', txtParcelle, schParcelle);
+  sectionsHtml += section(++n, "Les règles d'urbanisme de votre zone", txtRegles, '');
+  sectionsHtml += section(++n, 'On identifie la rue et le fond', txtRueFond, schVoirie + schFond);
+  sectionsHtml += section(++n, 'Mitoyenneté : les murs déjà accolés', txtMito, schMito);
+  sectionsHtml += section(++n, 'Où peut-on poser le bâtiment ?', txtPlacement, schLateral + schAvAr + schEmprise);
+  if (scb) sectionsHtml += section(++n, 'Combien de surface de plancher ?', txtScb, schScb);
+  if (lg) sectionsHtml += section(++n, 'Logements et stationnement', txtLog, schLog);
+  if (wn.length) sectionsHtml += section(++n, 'Points de vigilance', '', schWarn);
+  sectionsHtml += section(++n, 'En résumé', synthese, '');
 
-  return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Palladio debug \u00b7 ${e1.adresse}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#111;background:#fff;padding:32px 40px 80px}.mono{font-family:ui-monospace,'SF Mono','Menlo','Consolas',monospace;font-size:12px}.bandeau{margin-bottom:48px;padding-bottom:24px;border-bottom:1px solid #e5e5e5}.bandeau h1{font-size:24px;font-weight:600;letter-spacing:-0.01em}.bandeau-meta{color:#888;font-size:12px;font-family:ui-monospace,monospace;margin-bottom:24px}.bandeau-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:24px}.info-block{padding:16px 0}.info-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#888;margin-bottom:6px}.info-value{font-size:15px;font-weight:500;color:#111}.info-value-big{font-size:28px;font-weight:600;color:#111;letter-spacing:-0.02em}.info-sub{font-size:12px;color:#777;margin-top:4px}.info-result{padding:16px 20px;background:#f7f7f5;border-radius:6px}.schemas-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:32px}.schema-card{border:1px solid #e5e5e5;border-radius:6px;padding:24px;background:#fff}.schema-card.wide{grid-column:1 / -1}.schema-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px}.schema-num{font-size:11px;font-family:ui-monospace,monospace;color:#888}.schema-title{font-size:16px;font-weight:600;letter-spacing:-0.01em}.schema-svg{width:100%;height:360px;display:block}.schema-card.wide .schema-svg{height:500px}.schema-caption{font-size:13px;color:#555;margin-top:12px;line-height:1.55}.schema-content{padding:8px 0}.schema-text-only .text-row{display:grid;grid-template-columns:200px 1fr;gap:16px;padding:10px 0;border-bottom:1px solid #f0f0f0}.schema-text-only .text-row:last-child{border-bottom:0}.schema-text-only .k{font-size:12px;color:#888;text-transform:uppercase;letter-spacing:.04em}.schema-text-only .v{font-size:14px;color:#111}.parcel-fill{fill:#fafafa;stroke:#111;stroke-width:0.4}.parcel-fill-light{fill:#fafafa;stroke:#ccc;stroke-width:0.3}.parcel-fill-final{fill:#f3f3f3;stroke:#888;stroke-width:0.3}.emprise-fill{fill:#111;fill-opacity:0.85;stroke:#000;stroke-width:0.3}.dot-vertex{fill:#111}.dot-geocode{fill:#2962ff}.lbl-vertex{font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:1.8px;font-weight:600;fill:#111;text-anchor:middle;dominant-baseline:middle}.edge-voirie-other{stroke:#ccc;stroke-width:0.3;fill:none}.edge-voirie-winner{stroke:#c00;stroke-width:0.8;fill:none}.lbl-edge{font-size:1.4px;fill:#888;text-anchor:middle;dominant-baseline:middle}.lbl-edge-winner{font-size:1.6px;fill:#c00;font-weight:600;text-anchor:middle;dominant-baseline:middle}.line-perp{stroke:#2962ff;stroke-width:0.3;stroke-dasharray:0.8,0.8;fill:none}.line-recul-lateral{stroke:#555;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}.lbl-recul{font-size:1.4px;fill:#555;text-anchor:middle;dominant-baseline:middle}.edge-voirie-thick{stroke:#c00;stroke-width:0.7;fill:none}.edge-fond-thick{stroke:#2a7;stroke-width:0.7;fill:none}.line-recul-avant{stroke:#c00;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}.line-recul-arriere{stroke:#2a7;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}.line-recul-prof{stroke:#84c;stroke-width:0.4;stroke-dasharray:0.6,0.6;fill:none}.lbl-recul-avant{font-size:1.4px;fill:#c00;font-weight:600;text-anchor:middle;dominant-baseline:middle}.lbl-recul-arriere{font-size:1.4px;fill:#2a7;font-weight:600;text-anchor:middle;dominant-baseline:middle}.lbl-recul-prof{font-size:1.3px;fill:#84c;font-weight:600;text-anchor:middle;dominant-baseline:middle}.cand-list{margin-top:12px;padding-top:12px;border-top:1px solid #f0f0f0;display:flex;flex-direction:column;gap:4px}.cand-row{display:grid;grid-template-columns:60px 100px 100px 1fr;gap:12px;padding:4px 0;font-size:13px}.cand-row.cand-chosen{font-weight:600}.cand-label{font-family:ui-monospace,monospace}.cand-score{color:#888;font-size:12px}.cand-pick{color:#2a7;font-size:12px;text-transform:uppercase;letter-spacing:.05em}.footer{margin-top:64px;padding-top:24px;border-top:1px solid #e5e5e5;display:flex;justify-content:space-between;color:#888;font-size:12px;font-family:ui-monospace,monospace}.method{margin-bottom:48px}.method-h2{font-size:18px;font-weight:600;margin-bottom:20px;letter-spacing:-0.01em}.method-steps{display:flex;flex-direction:column;gap:14px}.method-step{display:flex;gap:16px;align-items:flex-start;padding:18px 22px;background:#f7f7f5;border-radius:8px}.method-num{flex:0 0 28px;width:28px;height:28px;border-radius:50%;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;font-family:ui-monospace,monospace}.method-body{flex:1}.method-title{font-size:15px;font-weight:600;margin-bottom:6px;color:#111}.method-text{font-size:14px;color:#333;line-height:1.65}.method-list{margin:10px 0 2px 18px;color:#333}.method-list li{margin:4px 0;line-height:1.5}</style></head><body>${bandeauHtml}${methodeHtml}<h2 class="method-h2" style="margin-top:8px;padding-top:24px;border-top:1px solid #e5e5e5">Détail technique</h2><div class="schemas-grid"><div class="schema-card wide"><div class="schema-header"><span class="schema-num">01</span><span class="schema-title">Geocodage</span></div>${sch1}</div><div class="schema-card"><div class="schema-header"><span class="schema-num">02</span><span class="schema-title">Parcelle cadastrale</span></div>${sch2}</div><div class="schema-card"><div class="schema-header"><span class="schema-num">03</span><span class="schema-title">Detection voirie</span></div>${sch3}</div><div class="schema-card"><div class="schema-header"><span class="schema-num">04</span><span class="schema-title">Candidats arete-fond</span></div>${sch4}</div><div class="schema-card"><div class="schema-header"><span class="schema-num">05</span><span class="schema-title">Buffer lateral uniforme</span></div>${sch5}</div><div class="schema-card wide"><div class="schema-header"><span class="schema-num">06</span><span class="schema-title">Reculs avant / arriere / profondeur max</span></div>${sch6}</div><div class="schema-card wide"><div class="schema-header"><span class="schema-num">07</span><span class="schema-title">Emprise constructible finale</span></div>${sch7}</div><div class="schema-card"><div class="schema-header"><span class="schema-num">08</span><span class="schema-title">SCB par niveau</span></div>${sch8}</div><div class="schema-card"><div class="schema-header"><span class="schema-num">09</span><span class="schema-title">Logements &amp; parkings</span></div>${sch9}</div><div class="schema-card"><div class="schema-header"><span class="schema-num">10</span><span class="schema-title">Type de construction</span></div>${sch10}</div><div class="schema-card wide"><div class="schema-header"><span class="schema-num">11</span><span class="schema-title">Warnings</span></div>${sch11}</div></div><footer class="footer"><span>Palladio engine ${e5.meta_engine.version} \u00b7 ${e5.meta_engine.method}</span><span>${d.meta.timestamp}</span></footer></body></html>`;
+  const heroHtml = `<div class="hero"><h1>${e1.adresse}</h1><div class="addr">Parcelle ${e1.parcel_label} · zone ${e3.code_zone}${nomZone ? ' · ' + nomZone : ''}</div><div class="hero-grid"><div class="kpi"><div class="label">Terrain</div><div class="value">${fmt(terrain)} m²</div></div><div class="kpi"><div class="label">Règles (COS / CUS)</div><div class="value">${cos} / ${css}</div><div class="sub">h. ${hCorniche}m / ${hFaite}m</div></div><div class="kpi kpi-result"><div class="label">Emprise constructible</div><div class="value-big">${e5.emprise.surface_m2} m²</div><div class="sub">${ratioPct}% du terrain</div></div>${(lg ? `<div class="kpi"><div class="label">Logements estimés</div><div class="value">${lg.nb_logements}</div></div>` : '')}</div></div>`;
+
+  const topbar = `<div class="topbar"><span class="brand">Palladio</span><a class="btn-home" href="${FORM_URL}">← Nouvelle recherche</a></div>`;
+
+  return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Palladio · ${e1.adresse}</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><style>${styles()}</style></head><body>${topbar}<div class="wrap">${heroHtml}${sectionsHtml}<a class="btn-home btn-home-bottom" href="${FORM_URL}">← Nouvelle recherche</a><footer class="footer"><span>Palladio engine ${e5.meta_engine.version}</span><span>${d.meta.timestamp.slice(0, 16).replace('T', ' ')}</span></footer></div></body></html>`;
+}
+
+function styles() {
+  return `*{box-sizing:border-box;margin:0;padding:0}`
+    + `:root{--ink:#111;--muted:#777;--line:#e6e6e6;--soft:#f7f7f5;--amber:#e08a2e;--blue:#2962ff;--green:#2a7;--red:#c00}`
+    + `body{font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.55;color:var(--ink);background:#fff;-webkit-font-smoothing:antialiased}`
+    + `.mono{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:12px}`
+    + `.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}`
+    + `.topbar .brand{font-weight:700;font-size:17px;letter-spacing:-.01em}`
+    + `.btn-home{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:#fff;background:var(--ink);padding:9px 15px;border-radius:9px;text-decoration:none}`
+    + `.btn-home:active{opacity:.8}`
+    + `.btn-home-bottom{margin:8px 0 0}`
+    + `.wrap{max-width:880px;margin:0 auto;padding:24px 20px 72px}`
+    + `.hero{padding:4px 0 22px;border-bottom:1px solid var(--line);margin-bottom:26px}`
+    + `.hero h1{font-size:22px;font-weight:600;letter-spacing:-.01em;margin-bottom:4px}`
+    + `.hero .addr{color:var(--muted);font-size:14px}`
+    + `.hero-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin-top:20px}`
+    + `.kpi{background:var(--soft);border-radius:11px;padding:14px 16px}`
+    + `.kpi .label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:6px}`
+    + `.kpi .value{font-size:16px;font-weight:600}`
+    + `.kpi .value-big{font-size:26px;font-weight:700;letter-spacing:-.02em}`
+    + `.kpi .sub{font-size:12px;color:var(--muted);margin-top:3px}`
+    + `.kpi-result{background:#111;color:#fff}.kpi-result .label,.kpi-result .sub{color:#bbb}`
+    + `.section{margin-bottom:20px;padding:20px;border:1px solid var(--line);border-radius:14px}`
+    + `.section-head{display:flex;gap:12px;align-items:center;margin-bottom:10px}`
+    + `.section-num{flex:0 0 26px;width:26px;height:26px;border-radius:50%;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600}`
+    + `.section-title{font-size:16px;font-weight:600;letter-spacing:-.01em}`
+    + `.section-text{font-size:14px;color:#333;line-height:1.65}`
+    + `.section-text ul{margin:10px 0 2px 18px}.section-text li{margin:4px 0}`
+    + `.schema{margin-top:16px}`
+    + `.schema-svg{width:100%;height:auto;max-height:440px;display:block;background:#fff;border:1px solid #f0f0f0;border-radius:8px}`
+    + `.schema-caption{font-size:13px;color:#555;margin-top:10px;line-height:1.55}`
+    + `.schema-content{padding:4px 0}`
+    + `.text-row{display:grid;grid-template-columns:minmax(120px,210px) 1fr;gap:12px;padding:9px 0;border-bottom:1px solid #f0f0f0}`
+    + `.text-row:last-child{border-bottom:0}`
+    + `.k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}.v{font-size:14px}`
+    + `.cand-list{margin-top:12px;padding-top:12px;border-top:1px solid #f0f0f0;display:flex;flex-direction:column;gap:4px}`
+    + `.cand-row{display:grid;grid-template-columns:60px 90px 90px 1fr;gap:10px;padding:4px 0;font-size:13px}`
+    + `.cand-row.cand-chosen{font-weight:600}.cand-label{font-family:ui-monospace,monospace}.cand-score{color:#888;font-size:12px}.cand-pick{color:var(--green);font-size:12px;text-transform:uppercase;letter-spacing:.05em}`
+    + `.warn-row{display:flex;gap:10px;align-items:baseline;padding:8px 0;border-bottom:1px solid #f0f0f0;flex-wrap:wrap}`
+    + `.warn-lvl{font-family:ui-monospace,monospace;font-size:11px;text-transform:uppercase;color:#fff;padding:2px 6px;border-radius:3px}`
+    + `.warn-code{font-family:ui-monospace,monospace;font-size:12px;color:#888}.warn-msg{font-size:13px;color:#111;flex:1;min-width:200px}`
+    + `.parcel-fill{fill:#fafafa;stroke:#111;stroke-width:0.4}.parcel-fill-light{fill:#fafafa;stroke:#ccc;stroke-width:0.3}.parcel-fill-final{fill:#f3f3f3;stroke:#888;stroke-width:0.3}`
+    + `.emprise-fill{fill:#111;fill-opacity:0.85;stroke:#000;stroke-width:0.3}`
+    + `.dot-vertex{fill:#111}.dot-geocode{fill:#2962ff}`
+    + `.lbl-vertex{font-family:'Inter',sans-serif;font-size:1.8px;font-weight:600;fill:#111;text-anchor:middle;dominant-baseline:middle}`
+    + `.edge-voirie-other{stroke:#ccc;stroke-width:0.3;fill:none}.edge-voirie-winner{stroke:#c00;stroke-width:0.8;fill:none}`
+    + `.lbl-edge{font-family:'Inter',sans-serif;font-size:1.4px;fill:#888;text-anchor:middle;dominant-baseline:middle}`
+    + `.lbl-edge-winner{font-family:'Inter',sans-serif;font-size:1.6px;fill:#c00;font-weight:600;text-anchor:middle;dominant-baseline:middle}`
+    + `.line-perp{stroke:#2962ff;stroke-width:0.3;stroke-dasharray:0.8,0.8;fill:none}`
+    + `.line-recul-lateral{stroke:#555;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}`
+    + `.edge-mitoyen{stroke:#e08a2e;stroke-width:1.6;fill:none}`
+    + `.lbl-mito{font-family:'Inter',sans-serif;font-size:1.5px;fill:#e08a2e;font-weight:600;text-anchor:middle;dominant-baseline:middle}`
+    + `.lbl-recul{font-family:'Inter',sans-serif;font-size:1.4px;fill:#555;text-anchor:middle;dominant-baseline:middle}`
+    + `.edge-voirie-thick{stroke:#c00;stroke-width:0.7;fill:none}.edge-fond-thick{stroke:#2a7;stroke-width:0.7;fill:none}`
+    + `.line-recul-avant{stroke:#c00;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}.line-recul-arriere{stroke:#2a7;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}.line-recul-prof{stroke:#84c;stroke-width:0.4;stroke-dasharray:0.6,0.6;fill:none}`
+    + `.lbl-recul-avant{font-family:'Inter',sans-serif;font-size:1.4px;fill:#c00;font-weight:600;text-anchor:middle;dominant-baseline:middle}`
+    + `.lbl-recul-arriere{font-family:'Inter',sans-serif;font-size:1.4px;fill:#2a7;font-weight:600;text-anchor:middle;dominant-baseline:middle}`
+    + `.lbl-recul-prof{font-family:'Inter',sans-serif;font-size:1.3px;fill:#84c;font-weight:600;text-anchor:middle;dominant-baseline:middle}`
+    + `.footer{margin-top:48px;padding-top:20px;border-top:1px solid var(--line);display:flex;justify-content:space-between;color:#999;font-size:12px;font-family:ui-monospace,monospace}`
+    + `@media(max-width:600px){.wrap{padding:18px 14px 60px}.section{padding:16px 14px}.text-row{grid-template-columns:1fr;gap:2px}.hero h1{font-size:20px}.kpi .value-big{font-size:23px}}`;
 }
 
 function renderErrorPage(d) {
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Palladio error</title><style>body{font-family:Helvetica,Arial,sans-serif;max-width:800px;margin:60px auto;padding:0 24px;color:#111}.err{background:#fff5f5;border:1px solid #fcc;border-radius:6px;padding:24px}h1{font-size:20px;margin-bottom:12px}pre{background:#f7f7f5;padding:16px;border-radius:6px;font-size:12px;overflow:auto}</style></head><body><h1>Palladio \u00b7 erreur de calcul</h1><div class="err"><strong>${d.etape_5_emprise.error || 'Erreur inconnue'}</strong></div><h2 style="font-size:14px;margin-top:32px;margin-bottom:8px;color:#888;">Debug data</h2><pre>${JSON.stringify(d, null, 2)}</pre></body></html>`;
+  return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Palladio · erreur</title><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Inter',system-ui,sans-serif;max-width:760px;margin:0 auto;padding:32px 20px 60px;color:#111}.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px}.brand{font-weight:700;font-size:17px}.btn-home{font-size:13px;font-weight:500;color:#fff;background:#111;padding:9px 15px;border-radius:9px;text-decoration:none}h1{font-size:20px;margin-bottom:12px}.err{background:#fff5f5;border:1px solid #fcc;border-radius:10px;padding:20px;line-height:1.5}pre{background:#f7f7f5;padding:16px;border-radius:10px;font-size:12px;overflow:auto;margin-top:24px}</style></head><body><div class="topbar"><span class="brand">Palladio</span><a class="btn-home" href="${FORM_URL}">← Nouvelle recherche</a></div><h1>Le calcul n'a pas abouti</h1><div class="err"><strong>${d.etape_5_emprise.error || 'Erreur inconnue'}</strong></div><pre>${JSON.stringify(d, null, 2)}</pre></body></html>`;
 }
 
 function polygonArea(pts) {
