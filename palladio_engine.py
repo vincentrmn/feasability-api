@@ -1328,6 +1328,12 @@ def calculate_logements(scb_totale_m2: float,
         sh_logement = 0.0
 
     nb_logements = 0
+    plafonds = {
+        "capacite_surface": None,      # combien la surface de plancher peut contenir
+        "plafond_densite_log": None,   # densite reglementaire log/ha appliquee a la parcelle
+        "plafond_par_construction": None,  # max logements/construction (PAP QE)
+        "facteur_limitant": None,      # 'surface' | 'densite' | 'construction'
+    }
     if logement_ok and sh_logement > 0:
         if corriger_hab1:
             nb_log = scb_logement / SCB_MOYENNE_PAR_LOGEMENT
@@ -1335,28 +1341,38 @@ def calculate_logements(scb_totale_m2: float,
             # Fidele main.py v2.3 (HAB-1)
             nb_log = sh_logement / SCB_MOYENNE_PAR_LOGEMENT
 
+        cap_surface = nb_log
+        plafonds["capacite_surface"] = round(cap_surface, 2)
+        nb_log = cap_surface
+        facteur = "surface"
+
         # Plafond densite (log/ha)
         dl_max = zone_pag.get("dl_max")
         if dl_max:
             try:
                 nb_dl = (surface_terrain_m2 / 10000) * float(dl_max)
-                if nb_log > nb_dl:
+                plafonds["plafond_densite_log"] = round(nb_dl, 2)
+                if nb_dl < nb_log:
                     nb_log = nb_dl
+                    facteur = "densite"
                     contraintes.append(f"Densite max {dl_max} log/ha limitante")
             except (ValueError, TypeError):
                 pass
 
-        # Plafond par construction
+        # Plafond par construction (PAP QE)
         nb_max = zone_pag.get("nb_log_max_par_construction")
         if nb_max:
             try:
                 nb_max_val = float(str(nb_max).split()[0]) if isinstance(nb_max, str) else float(nb_max)
-                if nb_log > nb_max_val:
+                plafonds["plafond_par_construction"] = nb_max_val
+                if nb_max_val < nb_log:
                     nb_log = nb_max_val
+                    facteur = "construction"
                     contraintes.append(f"Plafond {nb_max_val:.0f} log/construction limitant")
             except (ValueError, TypeError):
                 pass
 
+        plafonds["facteur_limitant"] = facteur
         nb_logements = max(1, math.floor(nb_log))
 
     # Mix typologique
@@ -1391,6 +1407,7 @@ def calculate_logements(scb_totale_m2: float,
         "type_zone": type_zone,
         "logement_autorise": logement_ok,
         "contraintes": contraintes,
+        "plafonds": plafonds,
         "hab1": {
             "corrige": corriger_hab1,
             "scb_moyenne_par_logement_m2": round(SCB_MOYENNE_PAR_LOGEMENT, 1),

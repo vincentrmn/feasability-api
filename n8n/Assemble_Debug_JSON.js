@@ -283,8 +283,30 @@ function renderPage(d) {
   const midArriere = [(cotArriere[0][0] + cotArriere[1][0]) / 2, (cotArriere[0][1] + cotArriere[1][1]) / 2];
   const schAvAr = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-light"/><line x1="${projX(aWin[0]).toFixed(2)}" y1="${projY(aWin[1]).toFixed(2)}" x2="${projX(bWin[0]).toFixed(2)}" y2="${projY(bWin[1]).toFixed(2)}" class="edge-voirie-thick"/><line x1="${projX(parcelLurefPts[idxFond][0]).toFixed(2)}" y1="${projY(parcelLurefPts[idxFond][1]).toFixed(2)}" x2="${projX(parcelLurefPts[(idxFond+1) % parcelLurefPts.length][0]).toFixed(2)}" y2="${projY(parcelLurefPts[(idxFond+1) % parcelLurefPts.length][1]).toFixed(2)}" class="edge-fond-thick"/><line x1="${projX(cotAvant[0][0]).toFixed(2)}" y1="${projY(cotAvant[0][1]).toFixed(2)}" x2="${projX(cotAvant[1][0]).toFixed(2)}" y2="${projY(cotAvant[1][1]).toFixed(2)}" class="line-recul-avant"/><text x="${projX(midAvant[0]).toFixed(2)}" y="${projY(midAvant[1]).toFixed(2)}" class="lbl-recul-avant">avant ${ra}m</text><line x1="${projX(cotArriere[0][0]).toFixed(2)}" y1="${projY(cotArriere[0][1]).toFixed(2)}" x2="${projX(cotArriere[1][0]).toFixed(2)}" y2="${projY(cotArriere[1][1]).toFixed(2)}" class="line-recul-arriere"/><text x="${projX(midArriere[0]).toFixed(2)}" y="${projY(midArriere[1]).toFixed(2)}" class="lbl-recul-arriere">arriere ${rr}m</text>${cotProfMax}${verticesLabels}</svg><div class="schema-caption">Recul avant de <strong>${ra} m</strong> depuis la rue (${e5.voirie.edge_label}), recul arrière de <strong>${rr} m</strong> depuis le fond (${e5.fond.edge_label})${profMax ? `, et profondeur bâtie limitée à ${ra + profMax} m depuis la rue` : ''}.</div>`;
 
-  // --- Schema emprise finale ---
-  const schEmprise = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-final"/><polygon points="${pts2svg(empriseLurefPts)}" class="emprise-fill"/>${verticesLabels}</svg><div class="schema-caption">La zone noire est l'emprise constructible : <strong>${e5.emprise.surface_m2} m²</strong> (${e5.emprise.nb_sommets} sommets) sur un terrain de <strong>${polygonArea(parcelLurefPts).toFixed(1)} m²</strong>, soit <strong>${(e5.emprise.ratio_vs_cadastrale * 100).toFixed(1)}%</strong>.</div>`;
+  // --- Schema emprise finale (avec dimensions sur chaque cote du batiment) ---
+  const empDimLabels = empriseLurefPts.map((p, i) => {
+    const n = empriseLurefPts.length;
+    const a = p;
+    const b = empriseLurefPts[(i + 1) % n];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 1.5) return '';
+    // decale le label legerement vers l'exterieur de l'emprise
+    let mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    let dx = b[0] - a[0], dy = b[1] - a[1];
+    const L = Math.hypot(dx, dy) || 1;
+    let nx = dy / L, ny = -dx / L;
+    const ecx = empriseLurefPts.reduce((s, q) => s + q[0], 0) / n;
+    const ecy = empriseLurefPts.reduce((s, q) => s + q[1], 0) / n;
+    if (nx * (mx - ecx) + ny * (my - ecy) < 0) { nx = -nx; ny = -ny; }
+    mx += nx * 1.6; my += ny * 1.6;
+    return `<text x="${projX(mx).toFixed(2)}" y="${projY(my).toFixed(2)}" class="lbl-dim">${len.toFixed(1)}m</text>`;
+  }).join('');
+  const empEdgeLens = empriseLurefPts.map((p, i) => {
+    const b = empriseLurefPts[(i + 1) % empriseLurefPts.length];
+    return Math.hypot(b[0] - p[0], b[1] - p[1]);
+  }).filter(l => l >= 1.5).sort((x, y) => y - x);
+  const dimResume = empEdgeLens.length >= 2 ? ` Gabarit au sol : environ <strong>${empEdgeLens[0].toFixed(1)} m × ${empEdgeLens[1].toFixed(1)} m</strong>.` : '';
+  const schEmprise = `<svg viewBox="${viewBox}" class="schema-svg"><polygon points="${pts2svg(parcelLurefPts)}" class="parcel-fill-final"/><polygon points="${pts2svg(empriseLurefPts)}" class="emprise-fill"/>${empDimLabels}${verticesLabels}</svg><div class="schema-caption">La zone noire est l'emprise constructible : <strong>${e5.emprise.surface_m2} m²</strong> sur un terrain de <strong>${polygonArea(parcelLurefPts).toFixed(1)} m²</strong>, soit <strong>${(e5.emprise.ratio_vs_cadastrale * 100).toFixed(1)}%</strong>.${dimResume} Les cotes sont en mètres.</div>`;
 
   // --- Schemas metier (texte) ---
   const scb = e5.scb;
@@ -293,7 +315,9 @@ function renderPage(d) {
   const lg = e5.logements;
   const pk = e5.parkings;
   const mixRows = (lg && lg.mix_detail) ? Object.entries(lg.mix_detail).map(([t, m]) => `<div class="text-row"><span class="k">${t}</span><span class="v">${m.nb} × ${m.shn_m2} m² SHN</span></div>`).join('') : '';
-  const schLog = lg ? `<div class="schema-content"><div class="text-row"><span class="k">Logements</span><span class="v"><strong>${lg.nb_logements}</strong></span></div>${mixRows}<div class="text-row"><span class="k">Moyenne par logement</span><span class="v">${lg.surface_moyenne_shn_m2} m² habitables</span></div>${pk ? `<div class="text-row"><span class="k">Parkings voiture</span><span class="v">${pk.auto_min} à ${pk.auto_max}</span></div><div class="text-row"><span class="k">Parkings vélo</span><span class="v">${pk.velo}</span></div>` : ''}</div>` : '';
+  const flLabelShort = { surface: 'surface de plancher', densite: 'densité (log/ha)', construction: 'max par construction' };
+  const plRow = (lg && lg.plafonds && lg.plafonds.facteur_limitant) ? `<div class="text-row"><span class="k">Limite appliquée</span><span class="v">${flLabelShort[lg.plafonds.facteur_limitant] || lg.plafonds.facteur_limitant}</span></div>` : '';
+  const schLog = lg ? `<div class="schema-content"><div class="text-row"><span class="k">Logements</span><span class="v"><strong>${lg.nb_logements}</strong></span></div>${mixRows}<div class="text-row"><span class="k">Moyenne par logement</span><span class="v">${lg.surface_moyenne_shn_m2} m² habitables</span></div>${plRow}${pk ? `<div class="text-row"><span class="k">Parkings voiture</span><span class="v">${pk.auto_min} à ${pk.auto_max}</span></div><div class="text-row"><span class="k">Parkings vélo</span><span class="v">${pk.velo}</span></div>` : ''}</div>` : '';
 
   const wn = e5.warnings || [];
   const lvlColor = { info: '#2962ff', warning: '#c9a961', critique: '#c00' };
@@ -302,6 +326,8 @@ function renderPage(d) {
   const ruleMatch = e4.matches.length > 0 ? e4.matches[0].fields : {};
   const cos = ruleMatch.COS_max || '?';
   const css = ruleMatch.CSS_max || '?';
+  const dlMax = ruleMatch.DL_max_log_ha;
+  const nbLogMaxRule = ruleMatch.Nb_logements_max;
   const hFaite = ruleMatch.Hauteur_faite_max_m || '?';
   const hCorniche = ruleMatch.Hauteur_corniche_max_m || '?';
 
@@ -358,13 +384,22 @@ function renderPage(d) {
   let txtLog = '';
   if (lg) {
     if (lg.nb_logements > 0) {
-      txtLog = `En comptant un logement moyen d'environ 75 m², on estime <strong>${lg.nb_logements} logement${lg.nb_logements > 1 ? 's' : ''}</strong>`;
+      const pl = lg.plafonds || {};
+      const cap = pl.capacite_surface;
+      txtLog = `Le règlement ne fixe pas directement un nombre de logements : il pose des <strong>limites</strong>, et on prend la plus stricte. On compare trois choses :<ul>`;
+      if (cap != null) txtLog += `<li><strong>La surface disponible</strong> : avec un logement moyen d'environ 75 m² brut, les ${fmt(lg.scb_logement_m2)} m² de plancher logement peuvent contenir ~<strong>${Math.floor(cap)}</strong> logement${Math.floor(cap) > 1 ? 's' : ''}.</li>`;
+      if (pl.plafond_par_construction != null) txtLog += `<li><strong>Le maximum par construction</strong> fixé par le PAP de la zone ${e3.code_zone} : <strong>${pl.plafond_par_construction} logement${pl.plafond_par_construction > 1 ? 's' : ''}</strong>.</li>`;
+      if (pl.plafond_densite_log != null && dlMax) txtLog += `<li><strong>La densité maximale</strong> : ${dlMax} logements/hectare, soit <strong>${pl.plafond_densite_log.toFixed(1)}</strong> sur ce terrain de ${fmt(terrain)} m².</li>`;
+      txtLog += `</ul>`;
+      const facteurLabel = { surface: 'la surface de plancher disponible', densite: 'la densité réglementaire', construction: 'le plafond du règlement par construction' };
+      const fl = facteurLabel[pl.facteur_limitant] || 'la limite la plus stricte';
+      txtLog += `La limite qui s'applique ici est <strong>${fl}</strong>, d'où <strong>${lg.nb_logements} logement${lg.nb_logements > 1 ? 's' : ''}</strong>`;
       if (lg.scb_commerce_m2 > 0) txtLog += ` + un commerce en rez-de-chaussée (zone mixte)`;
       txtLog += `.`;
     } else {
       txtLog = `Cette zone n'autorise pas le logement (ou la surface est insuffisante) : <strong>aucun logement</strong>.`;
     }
-    if (pk) txtLog += ` Le règlement impose <strong>${pk.auto_min} à ${pk.auto_max} places voiture</strong> et <strong>${pk.velo} emplacement${pk.velo > 1 ? 's' : ''} vélo</strong>.`;
+    if (pk) txtLog += ` Côté stationnement, le règlement impose <strong>${pk.auto_min} à ${pk.auto_max} places voiture</strong> et <strong>${pk.velo} emplacement${pk.velo > 1 ? 's' : ''} vélo</strong>.`;
   }
 
   let synthese = `Sur ce terrain de <strong>${fmt(terrain)} m²</strong>, on peut bâtir une emprise au sol de <strong>${fmt(empriseM2)} m²</strong>`;
@@ -453,6 +488,7 @@ function styles() {
     + `.edge-mitoyen{stroke:#e08a2e;stroke-width:1.6;fill:none}`
     + `.lbl-mito{font-family:'Inter',sans-serif;font-size:1.5px;fill:#e08a2e;font-weight:600;text-anchor:middle;dominant-baseline:middle}`
     + `.lbl-recul{font-family:'Inter',sans-serif;font-size:1.4px;fill:#555;text-anchor:middle;dominant-baseline:middle}`
+    + `.lbl-dim{font-family:'Inter',sans-serif;font-size:1.6px;font-weight:600;fill:#fff;paint-order:stroke;stroke:#111;stroke-width:0.3px;text-anchor:middle;dominant-baseline:middle}`
     + `.edge-voirie-thick{stroke:#c00;stroke-width:0.7;fill:none}.edge-fond-thick{stroke:#2a7;stroke-width:0.7;fill:none}`
     + `.line-recul-avant{stroke:#c00;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}.line-recul-arriere{stroke:#2a7;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}.line-recul-prof{stroke:#84c;stroke-width:0.4;stroke-dasharray:0.6,0.6;fill:none}`
     + `.lbl-recul-avant{font-family:'Inter',sans-serif;font-size:1.4px;fill:#c00;font-weight:600;text-anchor:middle;dominant-baseline:middle}`
