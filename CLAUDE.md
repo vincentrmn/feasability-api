@@ -73,7 +73,7 @@ Le B2C sert à **collecter de la donnée comportementale** (qui cherche quoi, o�
 - `XFOhmez4MtTnmtnL` — **workflow Palladio**. Publié, version active `906e740c-6085-4673-9bdf-4aacdcac55bd` (Sprint 1.5, ajoute `parcelle_id` au payload).
 - Webhook test (HTML form) : `https://n8n-production-8929d.up.railway.app/webhook/palladio`
 - Webhook calcul : `https://n8n-production-8929d.up.railway.app/webhook/palladio/calcul?address=...`
-- Pipeline : `Webhook → Extract Address → Geocodage v4 → Extract Geocoded → Parcelle 359 → Zone PAG 698-28 → Identify PAG Zone → Lookup Rules Airtable → Build Palladio Payload → Calcul Palladio → Assemble Debug JSON (HTML 7 schemas) → Respond JSON`
+- Pipeline : `Webhook → Extract Address → Geocodage v4 → Extract Geocoded → Parcelle 359 → Zone PAG 698-28 → Identify PAG Zone → Lookup Rules Airtable → Build Palladio Payload → Calcul Palladio → Assemble Palladio Page (HTML) → Respond JSON`
 
 ### 4.3. Procédure de modification d'un workflow n8n
 Toujours dans cet ordre, **sans exception** :
@@ -202,7 +202,7 @@ const payload = {
 ```
 
 #### HTML debug — Schema 03 enrichi
-Le node "Assemble Debug JSON" affiche maintenant dans le schema 3 :
+Le node "Assemble Palladio Page" affiche maintenant dans le schema 3 :
 - Les arêtes voirie **en ambre `#c9a961`** (épaisses)
 - Les arêtes internes en gris (fines)
 - Caption : `Detection cadastrale: X arete(s) voirie sur N, soit Ym total. K voisines fetched (P publiques). OK / Fallback: ...`
