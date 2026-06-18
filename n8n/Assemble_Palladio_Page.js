@@ -35,7 +35,7 @@ if (palladioResponse && palladioResponse.emprise) {
   };
 }
 
-const debug = {
+const palladio = {
   meta: {
     workflow: 'Palladio',
     version: '0.6',
@@ -513,5 +513,5 @@ function polygonArea(pts) {
   return Math.abs(s / 2);
 }
 
-const html = renderPage(debug);
-return [{ json: { ...debug, html } }];
+const html = renderPage(palladio);
+return [{ json: { ...palladio, html } }];
