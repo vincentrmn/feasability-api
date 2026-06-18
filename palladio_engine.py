@@ -1390,9 +1390,31 @@ def calculer_palladio_full(
             "enveloppe": base,
         }
 
-    # ---- 2. SCB ----
-    emprise_au_sol = base["emprise"]["surface_m2"]
+    # ---- 2. Plafond COS sur l'emprise au sol ----
+    # L'enveloppe geometrique (apres reculs) doit aussi respecter le COS
+    # (Coefficient d'Occupation du Sol = part max du terrain couvrable au sol).
+    # Emprise legale = min(enveloppe geometrique, terrain x COS_max).
+    emprise_geometrique = base["emprise"]["surface_m2"]
     surface_terrain = base["parcelle"]["surface_cadastrale_m2"]
+    emprise_au_sol = emprise_geometrique
+    cos_applique = None
+    cos_max = zone_pag.get("cos_max") or zone_pag.get("COS_max")
+    if cos_max:
+        try:
+            emprise_cos = surface_terrain * float(cos_max)
+            limitant = emprise_cos < emprise_geometrique
+            emprise_au_sol = min(emprise_geometrique, emprise_cos)
+            cos_applique = {
+                "cos_max": float(cos_max),
+                "emprise_cos_m2": round(emprise_cos, 1),
+                "emprise_geometrique_m2": round(emprise_geometrique, 1),
+                "emprise_retenue_m2": round(emprise_au_sol, 1),
+                "limitant": limitant,
+            }
+        except (ValueError, TypeError):
+            cos_applique = None
+
+    # ---- 3. SCB (sur l'emprise plafonnee COS) ----
     scb = calculate_scb(emprise_au_sol, zone_pag, surface_terrain_net_m2=surface_terrain)
 
     # ---- 3. Logements ----
@@ -1449,6 +1471,7 @@ def calculer_palladio_full(
         "fond": base["fond"],
         "reculs_appliques": base["reculs_appliques"],
         "emprise": base["emprise"],
+        "cos_applique": cos_applique,
         "traces_reculs": base["traces_reculs"],
         "scb": scb,
         "logements": logements,
