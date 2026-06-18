@@ -133,6 +133,11 @@ BUILDINGS_COLLECTION_KEYWORDS = ("batiment", "building", "immeuble", "bati", "ed
 _BUILDINGS_COLLECTION_ID: Optional[str] = None
 _BUILDINGS_DISCOVERY_DONE = False
 
+# Diagnostics module-level (remontes dans la sortie pour debug a distance,
+# le conteneur de dev ne pouvant pas joindre le Geoportail)
+_BUILDINGS_DISCOVERY_DIAG: Dict[str, Any] = {}
+_BUILDINGS_FETCH_DIAG: Dict[str, Any] = {}
+
 # Distance de sondage perpendiculaire vers l'exterieur pour tester la presence
 # d'un batiment voisin accole a une arete (metres LUREF). Petit : le mur mitoyen
 # est sur la limite, donc le bati voisin commence juste de l'autre cote.
@@ -573,12 +578,13 @@ def discover_buildings_collection(timeout: int = NEIGHBORS_HTTP_TIMEOUT_S
     contient un mot-cle batiment. Resultat mis en cache module-level (un seul
     appel reseau par process). Retourne None en cas d'echec (fallback safe).
     """
-    global _BUILDINGS_COLLECTION_ID, _BUILDINGS_DISCOVERY_DONE
+    global _BUILDINGS_COLLECTION_ID, _BUILDINGS_DISCOVERY_DONE, _BUILDINGS_DISCOVERY_DIAG
     if _BUILDINGS_DISCOVERY_DONE:
         return _BUILDINGS_COLLECTION_ID
     _BUILDINGS_DISCOVERY_DONE = True
 
     if not _REQUESTS_OK:
+        _BUILDINGS_DISCOVERY_DIAG = {"catalogue_ok": False, "error": f"requests KO: {_REQUESTS_ERROR}"}
         print(f"[palladio bati] WARN requests indisponible : {_REQUESTS_ERROR}")
         return None
 
@@ -587,20 +593,29 @@ def discover_buildings_collection(timeout: int = NEIGHBORS_HTTP_TIMEOUT_S
         r.raise_for_status()
         data = r.json()
     except Exception as e:
+        _BUILDINGS_DISCOVERY_DIAG = {"catalogue_ok": False, "error": f"{type(e).__name__}: {e}"}
         print(f"[palladio bati] WARN catalogue collections injoignable : {e}")
         return None
 
+    collections = data.get("collections", [])
+    catalogue = []
     found = None
-    for col in data.get("collections", []):
+    for col in collections:
         cid = col.get("id") or col.get("name")
-        title = (col.get("title") or "").lower()
-        desc = (col.get("description") or "").lower()
-        hay = f"{title} {desc} {str(cid).lower()}"
-        if any(k in hay for k in BUILDINGS_COLLECTION_KEYWORDS):
+        title = (col.get("title") or "")
+        desc = (col.get("description") or "")
+        catalogue.append({"id": str(cid), "title": title})
+        hay = f"{title.lower()} {desc.lower()} {str(cid).lower()}"
+        if found is None and any(k in hay for k in BUILDINGS_COLLECTION_KEYWORDS):
             found = str(cid)
             print(f"[palladio bati] collection batiments decouverte : {found} ({title})")
-            break
 
+    _BUILDINGS_DISCOVERY_DIAG = {
+        "catalogue_ok": True,
+        "n_collections": len(collections),
+        "matched": found,
+        "catalogue": catalogue,
+    }
     if found is None:
         print("[palladio bati] WARN aucune collection batiments trouvee dans le catalogue")
     _BUILDINGS_COLLECTION_ID = found
@@ -638,10 +653,13 @@ def fetch_buildings(bbox_wgs84: Tuple[float, float, float, float],
     Retourne une liste de Polygones Shapely en LUREF. Liste vide en cas d'echec
     (fallback safe : la detection mitoyennete batie sera simplement "indisponible").
     """
+    global _BUILDINGS_FETCH_DIAG
     if not _REQUESTS_OK:
+        _BUILDINGS_FETCH_DIAG = {"error": "requests KO"}
         return []
     cid = discover_buildings_collection(timeout=timeout)
     if not cid:
+        _BUILDINGS_FETCH_DIAG = {"collection": None, "error": "aucune collection batiments"}
         return []
 
     url = f"{GEOPORTAIL_COLLECTIONS_URL}/{cid}/items"
@@ -653,16 +671,23 @@ def fetch_buildings(bbox_wgs84: Tuple[float, float, float, float],
     }
     try:
         r = requests.get(url, params=params, timeout=timeout)
+        status = r.status_code
         r.raise_for_status()
         data = r.json()
     except Exception as e:
+        _BUILDINGS_FETCH_DIAG = {"collection": cid, "url": url,
+                                 "http_status": locals().get("status"),
+                                 "error": f"{type(e).__name__}: {e}"}
         print(f"[palladio bati] WARN fetch batiments a echoue : {e}")
         return []
 
+    feats = data.get("features", [])
     buildings: List[Polygon] = []
-    for feat in data.get("features", []):
+    for feat in feats:
         geom = feat.get("geometry") or {}
         buildings.extend(_geojson_geom_to_luref_polys(geom))
+    _BUILDINGS_FETCH_DIAG = {"collection": cid, "http_status": status,
+                             "n_features": len(feats), "n_polys": len(buildings)}
     return buildings
 
 
@@ -1668,6 +1693,11 @@ def calculer_palladio_full(
         print(f"[palladio bati] WARN detection mitoyennete batie a echoue : {ex}")
         mitoyennete_batie = {"disponible": False, "n_batiments": 0,
                              "method": f"erreur_{type(ex).__name__}", "edges": []}
+    # Diagnostics de decouverte/fetch (debug a distance, retire une fois la collection figee)
+    mitoyennete_batie["diag"] = {
+        "discovery": _BUILDINGS_DISCOVERY_DIAG,
+        "fetch": _BUILDINGS_FETCH_DIAG,
+    }
 
     # ---- 6. Warnings ----
     pts_luref = base["parcelle"]["geometry_luref"]["coordinates"][0]
