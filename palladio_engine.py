@@ -1776,6 +1776,8 @@ def calculer_palladio_full(
     profondeur_max_m: Optional[float] = None,
     parcelle_id: Optional[str] = None,
     corriger_hab1: bool = True,
+    recul_avant_methode: Optional[Dict[str, Any]] = None,
+    corniche_effective_m: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Endpoint metier complet Sprint 2 : enveloppe + voirie + SCB + logements
@@ -1858,29 +1860,60 @@ def calculer_palladio_full(
         "fetch": _BUILDINGS_FETCH_DIAG,
     }
 
-    # ---- 3bis. Re-calcul enveloppe avec recul 0 sur les murs mitoyens batis ----
+    # ---- 3ter. Recul avant adaptatif (Palladio Scrap) ----
+    # Si la commune fournit une methode de recul avant (fixe / lie_hauteur /
+    # alignement_voisins), on calcule le recul avant EFFECTIF et on le substitue
+    # au scalaire d'entree. Gate par recul_avant_methode : absent -> comportement
+    # strictement inchange (prod actuelle). L'alignement reutilise les batiments
+    # deja fetchen pour la mitoyennete (collection 2214).
+    recul_avant_effectif = recul_avant_m
+    recul_avant_just: Dict[str, Any] = {"type": "fixe", "recul_m": recul_avant_m,
+                                        "source": "input_scalaire"}
+    if recul_avant_methode:
+        try:
+            n_pts = len(pts_luref_full)
+            a_v = pts_luref_full[idx_voirie]
+            b_v = pts_luref_full[(idx_voirie + 1) % n_pts]
+            cen = Polygon(pts_luref_full).centroid
+            parcel_poly_align = Polygon(pts_luref_full)
+            neighbor_polys = [b for b in (buildings or [])
+                              if not b.is_empty and not b.intersects(parcel_poly_align)]
+            recul_avant_effectif, recul_avant_just = compute_recul_avant_effectif(
+                recul_avant_methode, a_v, b_v, (cen.x, cen.y),
+                neighbor_polys_luref=neighbor_polys,
+                corniche_effective_m=corniche_effective_m)
+        except Exception as ex:
+            print(f"[palladio recul] WARN recul avant adaptatif a echoue, garde scalaire : {ex}")
+            recul_avant_effectif = recul_avant_m
+            recul_avant_just = {"type": "fixe", "recul_m": recul_avant_m,
+                                "source": f"fallback_erreur_{type(ex).__name__}"}
+
+    # ---- 3bis. Re-calcul enveloppe : recul 0 sur murs mitoyens batis +
+    # recul avant effectif si adaptatif. ----
     # Sur les cotes reellement accoles (mur_mitoyen_bati), le recul lateral tombe
     # a 0 : l'enveloppe peut s'etendre jusqu'a la limite. Corrige l'emprise absurde
     # des maisons en bande/mitoyennes (cf. 20 rue du Kiem : 4% -> realiste).
     party_wall_idxs = {e["idx"] for e in mitoyennete_batie.get("edges", [])
                        if e.get("mur_mitoyen_bati")}
-    if party_wall_idxs:
+    need_recalc = bool(party_wall_idxs) or abs(recul_avant_effectif - recul_avant_m) > 1e-6
+    if need_recalc:
         try:
             base = calculer_emprise_palladio(
                 parcel_geometry_wgs84=parcel_geometry_wgs84,
                 point_geocode_wgs84=point_geocode_wgs84,
-                recul_avant_m=recul_avant_m,
+                recul_avant_m=recul_avant_effectif,
                 recul_lateral_m=recul_lateral_m,
                 recul_arriere_m=recul_arriere_m,
                 profondeur_max_m=profondeur_max_m,
                 parcelle_id=parcelle_id,
-                party_wall_idxs=party_wall_idxs,
+                party_wall_idxs=party_wall_idxs or None,
             )
             idx_voirie = base["voirie"]["idx"]
             idx_fond = base["fond"]["idx"]
         except PalladioError as ex:
             # On garde l'enveloppe pass-1 si le recalcul degenere (jamais pire)
-            print(f"[palladio bati] WARN recalcul party-wall a echoue, garde pass-1 : {ex}")
+            print(f"[palladio bati] WARN recalcul (party-wall/recul avant) a echoue, garde pass-1 : {ex}")
+    base["recul_avant_adaptatif"] = recul_avant_just
 
     # ---- 4. Plafond COS sur l'emprise au sol ----
     # L'enveloppe geometrique (apres reculs) doit aussi respecter le COS
