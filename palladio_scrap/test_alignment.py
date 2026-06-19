@@ -1,0 +1,66 @@
+"""
+Tests unitaires du recul avant adaptatif (Palladio Scrap).
+Geometrie pure LUREF, aucun appel reseau. Lancer : python3 palladio_scrap/test_alignment.py
+"""
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from shapely.geometry import Polygon
+from palladio_engine import compute_recul_avant_effectif, alignment_band_ra
+
+# Arete voirie le long de l'axe x ; parcelle au-dessus (centroid y>0).
+P1, P2 = [0.0, 0.0], [10.0, 0.0]
+CENTROID = (5.0, 5.0)
+
+def approx(a, b, tol=1e-6): return abs(a - b) <= tol
+
+def test_fixe():
+    ra, j = compute_recul_avant_effectif({"type": "fixe", "min_m": 6, "max_m": 8,
+                                          "source_article": "Art. X"}, P1, P2, CENTROID)
+    assert approx(ra, 6.0), ra
+    assert j["type"] == "fixe" and j["source_article"] == "Art. X"
+    print("OK fixe -> 6.0")
+
+def test_lie_hauteur():
+    ra, j = compute_recul_avant_effectif({"type": "lie_hauteur", "coef_hauteur": 0.5,
+                                          "plancher_m": 4.5}, P1, P2, CENTROID,
+                                         corniche_effective_m=11.0)
+    assert approx(ra, 5.5), ra          # max(0.5*11, 4.5) = 5.5
+    ra2, _ = compute_recul_avant_effectif({"type": "lie_hauteur", "coef_hauteur": 0.5,
+                                           "plancher_m": 4.5}, P1, P2, CENTROID,
+                                          corniche_effective_m=8.0)
+    assert approx(ra2, 4.5), ra2        # max(4.0, 4.5) = 4.5 (plancher)
+    print("OK lie_hauteur -> 5.5 / plancher 4.5")
+
+def test_alignement_deux_voisins():
+    # Deux batiments voisins, facades avant a y=4 et y=6 -> moyenne 5.0
+    g = Polygon([(11, 6), (20, 6), (20, 12), (11, 12)])   # front a y=6
+    d = Polygon([(-9, 4), (-1, 4), (-1, 10), (-9, 10)])   # front a y=4
+    ra, info = alignment_band_ra(P1, P2, [g, d], CENTROID, fallback_m=6.0)
+    assert approx(ra, 5.0), (ra, info)
+    assert info["n_voisins_utiles"] == 2 and not info["fallback_used"]
+    print("OK alignement 2 voisins -> 5.0", info["fronts_m"])
+
+def test_alignement_fallback():
+    ra, info = alignment_band_ra(P1, P2, [], CENTROID, fallback_m=6.0)
+    assert approx(ra, 6.0) and info["fallback_used"]
+    # Via dispatch complet (aucun voisin fourni)
+    ra2, j = compute_recul_avant_effectif({"type": "alignement_voisins", "fallback_m": 4,
+                                           "source_article": "Art. 6.1.1"}, P1, P2, CENTROID,
+                                          neighbor_polys_luref=[])
+    assert approx(ra2, 4.0) and j["fallback_used"]
+    print("OK alignement fallback -> 6.0 / 4.0")
+
+def test_alignement_ignore_voisin_arriere():
+    # Un batiment du mauvais cote (y negatif) doit etre ignore (cote rue)
+    arriere = Polygon([(2, -8), (8, -8), (8, -2), (2, -2)])
+    bon = Polygon([(11, 5), (20, 5), (20, 12), (11, 12)])  # front y=5
+    ra, info = alignment_band_ra(P1, P2, [arriere, bon], CENTROID, fallback_m=6.0)
+    assert approx(ra, 5.0), (ra, info)
+    assert info["n_voisins_utiles"] == 1
+    print("OK alignement ignore voisin cote rue -> 5.0")
+
+if __name__ == "__main__":
+    test_fixe(); test_lie_hauteur(); test_alignement_deux_voisins()
+    test_alignement_fallback(); test_alignement_ignore_voisin_arriere()
+    print("\nTOUS LES TESTS PASSENT.")

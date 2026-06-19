@@ -174,4 +174,68 @@ Voir §5.1 : les communes à reculs/hauteurs contextuels (« alignement sur les 
 
 ---
 
+## 10. Calibration pilote (4 communes) + Roadmap d'industrialisation
+
+### 10.1. Conclusion de la calibration (2026-06-19)
+Pilote sur **Strassen + Bertrange + Mamer + Junglinster**. Résultat central :
+**aucune commune ne paramètre le QE de la même façon.** Le texte s'extrait
+fidèlement partout (`pdftotext -layout` / pdf→md, zéro hallucination) ; la
+difficulté n'est jamais l'OCR mais la **normalisation** et l'**adaptativité moteur**.
+
+| Aspect | Strassen | Bertrange | Mamer | Junglinster |
+|---|---|---|---|---|
+| Recul avant | fixe | alignement_voisins (+fixe+lié-H) | alignement_voisins | fixe (alignement en dérogation) |
+| COS/CSS en QE | présents (PAP QE) | absents | absents | absents (degré géométrique) |
+| Hauteurs | fixes | fixes | par_niveaux | par_niveaux |
+| Nb logements | fixe / par_ha | fixe | formule | graphique |
+| Voirie spéciale | Route d'Arlon | lié-H QGSC | rues nommées (bande 20m) | alignement PAG |
+
+Données brutes par commune : `palladio_scrap/communes/*.json` (jeu de vérité +
+futur contenu Airtable). Schéma typé figé : `palladio_scrap/SCHEMA.md`. Prompts
+d'extraction réutilisables : `palladio_scrap/prompts/`.
+
+### 10.2. Constat d'environnement (egress)
+Le conteneur de dev (Claude Code web) a un **egress en allowlist** : il peut
+*chercher* (WebSearch) mais **pas télécharger** les PDF communaux ni joindre
+geoportail/data.public.lu (403). Le portail national `data.public.lu` ne porte de
+toute façon **ni le PAP QE ni le RBVS** (uniquement PAG écrit + GML + PAP NQ) →
+les docs utiles sont sur les sites communaux. Conséquences :
+- Pilote = **upload** des PDF (fait pour les 4 communes).
+- Industrialisation (LOCATE/DOWNLOAD/crawl) = **doit tourner sur Railway/n8n**
+  (egress ouvert, atteint déjà geoportail), pas dans la session.
+- Validation = **essais réels sur Railway** puis relecture Airtable (décision Vincent
+  2026-06-19 : autonomie, validation a posteriori).
+
+### 10.3. Roadmap « Palladio sur toutes les communes »
+Couches (cf. plan béton) :
+1. **Schéma typé** — FAIT (`SCHEMA.md`). Reculs typés, COS/CSS nullable, hauteurs/
+   logements modélisés, `source_articles` par champ.
+2. **Données 4 communes** — FAIT (`communes/*.json`).
+3. **Prompts d'extraction** — FAIT (`prompts/`).
+4. **Moteur adaptatif (recul avant)** — cœur FAIT + testé hors réseau :
+   `compute_recul_avant_effectif()` dispatch {fixe, lie_hauteur, alignement_voisins}
+   dans `palladio_engine.py` ; tests `palladio_scrap/test_alignment.py` (5/5 OK).
+   **Reste** : câbler dans `calculer_palladio_full` (lire `methode` depuis Airtable,
+   fetch bâtiments voisins via `fetch_buildings` collection 2214 déjà présente) +
+   tester en réel sur Railway.
+5. **Alignement par bâtiments voisins** — `alignment_band_ra()` FAIT (réutilise la
+   couche bâtiments Sprint 3). Recul avant effectif = moyenne des distances façade
+   des voisins à la ligne de voirie ; fallback chiffré si 0 voisin.
+6. **Justification + liens articles** — le dispatch renvoie déjà `{type, recul_m,
+   source_article, ...}`. **Reste** : surfacer dans la sortie + HTML debug.
+7. **Pipeline déployé** (Railway/n8n) — à faire : LOCATE (WebSearch + sites
+   communaux) → download → pdf→md → extraction (prompts) → JSON schéma → upsert
+   Airtable `Confiance=auto`. Vision (Opus) réservée au graphique (casier NQ,
+   logements/niveaux graphiques Junglinster).
+8. **Migration Airtable** — ajouter les champs `[NEW]` typés + écrire les 4 communes.
+   Additif (ne pas casser les field IDs prod Strassen). Relu par Vincent ensuite.
+
+### 10.4. Règle d'or moteur (dégradation gracieuse)
+Zone contextuelle sans voisins calculables, ou donnée graphique manquante → calculer
+ce qu'on peut + warning + CTA « consulter un architecte » (signal de conversion, pas
+erreur). Jamais de 500, jamais de chiffre inventé. `Confiance=auto` ne sert pas le
+B2C sans relecture.
+
+---
+
 *Fin du briefing.*

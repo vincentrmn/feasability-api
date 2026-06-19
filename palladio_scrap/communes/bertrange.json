@@ -1,0 +1,68 @@
+{
+  "commune": "Bertrange",
+  "sources": [
+    { "doc": "PAP QE partie écrite", "version_date": "2026-04-27" },
+    { "doc": "PAG partie écrite", "version_date": "2026-04-27" },
+    { "doc": "RBVS", "version_date": null }
+  ],
+  "secteurs": [
+    {
+      "code_pap": "QFD", "zone_pag": ["HAB-1"], "regime": "QE",
+      "libelle": "Quartier d'habitation de faible densité",
+      "recul_avant":   { "type": "alignement_voisins", "fallback_m": 6, "source_article": "Art. 4.1.1",
+                          "regle": "bande d'alignement formée par le prolongement des façades antérieures des 2 voisins ; retrait ≤1m admis" },
+      "recul_lateral": { "type": "fixe", "min_m": 3, "zero_si_accole": true, "source_article": "Art. 4.1.2" },
+      "recul_arriere": { "type": "fixe", "min_m": 10, "min_sous_sol_m": 6, "source_article": "Art. 4.1.3" },
+      "profondeur_max_m": 15, "bande_construction_max_m": 30,
+      "hauteur_modele": "fixe", "hauteur_corniche_max_m": 8, "hauteur_faite_max_m": 12, "hauteur_acrotere_max_m": 11,
+      "niveaux_hors_sol_max": 2, "niveaux_combles_retrait": 1, "niveaux_sous_sol_max": "libre",
+      "cos_max": null, "css_max": null,
+      "logements_modele": "fixe", "logements_max_par_construction": 2,
+      "source_articles": { "profondeur": "Art. 4.2.2", "bande": "Art. 4.2.3", "niveaux": "Art. 4.3", "hauteurs": "Art. 4.4", "logements": "Art. 4.5" },
+      "notes": "COS/CSS ABSENTS du PAP QE (enveloppe purement géométrique). Logements illimités par parcelle, 2 par construction.",
+      "confiance": "auto"
+    },
+    {
+      "code_pap": "QMD", "zone_pag": ["HAB-2"], "regime": "QE",
+      "libelle": "Quartier d'habitation de moyenne densité",
+      "recul_avant":   { "type": "alignement_voisins", "fallback_m": 6, "source_article": "Art. 5.1.1" },
+      "recul_lateral": { "type": "fixe", "min_m": 4.5, "zero_si_accole": true, "source_article": "Art. 5.1.2" },
+      "recul_arriere": { "type": "fixe", "min_m": 10, "source_article": "Art. 5.1.3" },
+      "profondeur_max_m": 15, "bande_construction_max_m": 30,
+      "hauteur_modele": "fixe", "hauteur_corniche_max_m": 11, "hauteur_faite_max_m": 16, "hauteur_acrotere_max_m": 13.5,
+      "niveaux_hors_sol_max": 3, "niveaux_combles_retrait": 1, "niveaux_sous_sol_max": "libre",
+      "cos_max": null, "css_max": null,
+      "logements_modele": "fixe", "logements_max_par_construction": 15,
+      "notes": "Obligation plantations min 1/6 superficie. Dérogation maisons uni/bi-familiales → règles QFD.",
+      "confiance": "auto"
+    },
+    {
+      "code_pap": "QCV", "zone_pag": ["MIX-v"], "regime": "QE",
+      "libelle": "Quartier du centre villageois",
+      "recul_avant":   { "type": "alignement_voisins", "fallback_m": 4, "source_article": "Art. 6.1.1" },
+      "recul_lateral": { "type": "fixe", "min_m": 3, "zero_si_accole": true },
+      "recul_arriere": { "type": "fixe", "min_m": 10 },
+      "profondeur_max_m": 15, "bande_construction_max_m": null,
+      "hauteur_modele": "fixe", "hauteur_corniche_max_m": 11, "hauteur_faite_max_m": 16, "hauteur_acrotere_max_m": 13.5,
+      "niveaux_hors_sol_max": 3, "niveaux_combles_retrait": 1, "niveaux_sous_sol_max": "libre",
+      "cos_max": null, "css_max": null,
+      "logements_modele": "fixe", "logements_max_par_construction": 10,
+      "confiance": "auto"
+    },
+    {
+      "code_pap": "QMU", "zone_pag": ["MIX-u"], "regime": "QE",
+      "libelle": "Quartier mixte à caractère urbain",
+      "recul_avant":   { "type": "fixe", "min_m": 6, "source_article": "Art. 7.1.1" },
+      "recul_lateral": { "type": "fixe", "min_m": 4.5, "zero_si_accole": true },
+      "recul_arriere": { "type": "fixe", "min_m": 10 },
+      "profondeur_max_m": 15, "bande_construction_max_m": null,
+      "hauteur_modele": "fixe", "hauteur_corniche_max_m": 11, "hauteur_faite_max_m": 16, "hauteur_acrotere_max_m": 15,
+      "niveaux_hors_sol_max": 3, "niveaux_combles_retrait": 1, "niveaux_sous_sol_max": "libre",
+      "cos_max": null, "css_max": null,
+      "logements_modele": "fixe", "logements_max_par_construction": 15,
+      "notes": "Profondeur RDC 25m si activités (art. 7.2.2). Recul avant FIXE (pas d'alignement), contrairement à QFD/QMD/QCV.",
+      "confiance": "auto"
+    }
+  ],
+  "note_globale": "13 secteurs au total (QFD…QsGr). 3 régimes de recul avant dans une même commune : alignement_voisins (QFD/QMD/QCV), fixe (QMU/QATC), lié-hauteur (QGSC: 0.5×corniche+min). COS/CSS absents partout en QE."
+}

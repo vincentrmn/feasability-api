@@ -802,6 +802,125 @@ def detect_mitoyennete_batie(pts_luref: List[List[float]],
 
 
 # ============================================================
+# RECUL AVANT ADAPTATIF (Palladio Scrap) - dispatch par type de recul
+# ============================================================
+# Calibration 4 communes (Strassen/Bertrange/Mamer/Junglinster) : le recul avant
+# n'est pas un scalaire universel. Trois regimes coexistent, parfois dans une meme
+# commune :
+#   - "fixe"               : scalaire (Strassen, Junglinster QMU...).
+#   - "lie_hauteur"        : coef x hauteur corniche, planche a un minimum.
+#   - "alignement_voisins" : "bande d'alignement" = la facade s'aligne sur le
+#                            prolongement des facades anterieures des voisins batis.
+#                            On calcule le recul depuis les batiments voisins
+#                            (collection 2214, reutilise fetch_buildings) ; fallback
+#                            chiffre si aucun voisin bati n'est exploitable.
+# Le resultat est un recul avant EFFECTIF (metres), reinjecte tel quel dans le
+# pipeline demi-plan existant : aucune modification de _compute_enveloppe_unique.
+
+ALIGNEMENT_RETRAIT_TOLERE_M = 1.0  # retrait arriere admis vs la bande (PAP QE usuels)
+
+
+def _edge_inward_unit_normal(p1: List[float], p2: List[float],
+                             centroid: Tuple[float, float]) -> Optional[Tuple[float, float]]:
+    """Normale unitaire a l'arete (p1,p2) pointant vers l'interieur (cote centroid)."""
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    L = math.hypot(dx, dy)
+    if L < 1e-9:
+        return None
+    nx, ny = -dy / L, dx / L
+    mx, my = (p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0
+    if (centroid[0] - mx) * nx + (centroid[1] - my) * ny < 0:
+        nx, ny = -nx, -ny
+    return (nx, ny)
+
+
+def alignment_band_ra(p1: List[float], p2: List[float],
+                      neighbor_polys_luref: List[Polygon],
+                      centroid: Tuple[float, float],
+                      fallback_m: float) -> Tuple[float, Dict[str, Any]]:
+    """
+    Recul avant deduit de la bande d'alignement des batiments voisins.
+
+    Pour chaque batiment voisin, on mesure la distance perpendiculaire de sa facade
+    la plus proche a la LIGNE de l'arete voirie (p1,p2), cote parcelle. Le recul
+    d'alignement = moyenne de ces distances de facade. Aucun voisin exploitable
+    -> fallback_m.
+
+    Pur geometrique (LUREF), testable hors reseau.
+    """
+    info: Dict[str, Any] = {"methode": "alignement_voisins", "n_voisins_utiles": 0,
+                            "fronts_m": [], "fallback_m": fallback_m, "fallback_used": False}
+    n = _edge_inward_unit_normal(p1, p2, centroid)
+    if n is None:
+        info["fallback_used"] = True
+        info["raison"] = "arete degeneree"
+        return fallback_m, info
+    nx, ny = n
+    fronts: List[float] = []
+    for poly in neighbor_polys_luref or []:
+        if poly is None or poly.is_empty:
+            continue
+        ds = [ (vx - p1[0]) * nx + (vy - p1[1]) * ny
+               for (vx, vy) in poly.exterior.coords ]
+        pos = [d for d in ds if d > 0.05]   # cote parcelle uniquement
+        if not pos:
+            continue
+        fronts.append(min(pos))             # facade la plus proche de la rue
+    if not fronts:
+        info["fallback_used"] = True
+        return fallback_m, info
+    ra = sum(fronts) / len(fronts)
+    info["n_voisins_utiles"] = len(fronts)
+    info["fronts_m"] = [round(f, 2) for f in fronts]
+    return ra, info
+
+
+def compute_recul_avant_effectif(methode: Dict[str, Any],
+                                 p1: List[float], p2: List[float],
+                                 centroid: Tuple[float, float],
+                                 neighbor_polys_luref: Optional[List[Polygon]] = None,
+                                 corniche_effective_m: Optional[float] = None
+                                 ) -> Tuple[float, Dict[str, Any]]:
+    """
+    Dispatch du recul avant selon le type defini par la commune (schema Palladio
+    Scrap). Retourne (recul_avant_m, justification) ; justification porte le type,
+    la valeur, et la reference d'article pour l'affichage cote frontend.
+
+    `methode` exemples :
+      {"type":"fixe","min_m":6,"source_article":"Art. 4.1.1"}
+      {"type":"lie_hauteur","coef_hauteur":0.5,"plancher_m":4.5,"source_article":"..."}
+      {"type":"alignement_voisins","fallback_m":6,"source_article":"Art. 4.1.1"}
+    """
+    t = (methode or {}).get("type", "fixe")
+    just: Dict[str, Any] = {"type": t, "source_article": (methode or {}).get("source_article")}
+
+    if t == "lie_hauteur":
+        coef = methode.get("coef_hauteur") or 0.5
+        plancher = methode.get("plancher_m") or 0.0
+        h = corniche_effective_m if corniche_effective_m is not None else 0.0
+        ra = max(coef * h, plancher)
+        just.update({"coef_hauteur": coef, "plancher_m": plancher,
+                     "corniche_m": h, "recul_m": round(ra, 2)})
+        return ra, just
+
+    if t == "alignement_voisins":
+        fallback = methode.get("fallback_m")
+        fallback = float(fallback) if fallback is not None else 6.0
+        ra, ainfo = alignment_band_ra(p1, p2, neighbor_polys_luref or [],
+                                      centroid, fallback)
+        just.update(ainfo)
+        just["recul_m"] = round(ra, 2)
+        return ra, just
+
+    # defaut : fixe
+    ra = methode.get("min_m")
+    ra = float(ra) if ra is not None else 0.0
+    just.update({"min_m": methode.get("min_m"), "max_m": methode.get("max_m"),
+                 "recul_m": round(ra, 2)})
+    return ra, just
+
+
+# ============================================================
 # CALCUL ENVELOPPE (porte de algo_v4.compute_enveloppe_v4)
 # ============================================================
 

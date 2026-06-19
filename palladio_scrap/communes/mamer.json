@@ -1,0 +1,52 @@
+{
+  "commune": "Mamer",
+  "sources": [
+    { "doc": "PAP QE partie écrite", "version_date": "2022-01" },
+    { "doc": "PAG partie écrite", "version_date": "2022-01" },
+    { "doc": "RBVS", "version_date": null, "note": "non fourni au pilote" }
+  ],
+  "secteurs": [
+    {
+      "code_pap": "HAB-1", "zone_pag": ["HAB-1"], "regime": "QE",
+      "libelle": "Zone d'habitation 1",
+      "recul_avant":   { "type": "alignement_voisins", "fallback_m": 4, "source_article": "Art. 4.1",
+                          "regle": "alignement de façade des constructions voisines ; alignement non obligatoire au-delà de 6m ; fallback 4m si absence de voisins" },
+      "recul_lateral": { "type": "fixe", "min_m": 3, "zero_si_accole": true, "source_article": "Art. 4.1",
+                          "note": "1 niveau peut s'implanter sur limite latérale" },
+      "recul_arriere": { "type": "fixe", "min_m": 10, "source_article": "Art. 4.1" },
+      "profondeur_max_m": 15, "profondeur_sous_sol_max_m": 20, "bande_construction_max_m": 40,
+      "regime_voirie_special": { "voies": ["rue Kirpach", "rue du Commerce", "Dippach"], "bande_construction_max_m": 20 },
+      "hauteur_modele": "par_niveaux",
+      "hauteur_par_niveaux": [
+        { "niveaux": 3, "corniche_m": 9.5, "acrotere_m": 10.5 },
+        { "niveaux": 4, "corniche_m": 12.5, "acrotere_m": 13.5 }
+      ],
+      "niveaux_sous_sol_max": "libre",
+      "cos_max": null, "css_max": null,
+      "logements_modele": "formule",
+      "logements_formule": "Nb logements bi/plurifamiliales calculé selon formule (à coder ; voir art. nb de logements).",
+      "source_articles": { "profondeur": "Art. 4.2", "hauteurs": "Art. 4 (hauteurs)" },
+      "notes": "Ordre contigu dominant. Profondeur 15m pour 3+ logements. COS/CSS absents. Formule logements à expliciter.",
+      "confiance": "auto"
+    },
+    {
+      "code_pap": "HAB-2", "zone_pag": ["HAB-2"], "regime": "QE",
+      "libelle": "Zone d'habitation 2",
+      "recul_avant":   { "type": "alignement_voisins", "fallback_m": null, "source_article": "Art. 3.1",
+                          "regle": "alignement façades voisines ; non obligatoire au-delà de 6m", "note": "fallback à confirmer" },
+      "recul_lateral": { "type": "fixe", "min_m": null, "zero_si_accole": true, "note": "à confirmer" },
+      "recul_arriere": { "type": "fixe", "min_m": null, "note": "à confirmer" },
+      "profondeur_max_m": 15, "profondeur_sous_sol_max_m": 20,
+      "hauteur_modele": "par_niveaux",
+      "hauteur_par_niveaux": [
+        { "niveaux": 2, "corniche_m": 7.5, "acrotere_m": 8.5 },
+        { "niveaux": 3, "corniche_m": 9.5, "acrotere_m": 10.5 }
+      ],
+      "cos_max": null, "css_max": null,
+      "logements_modele": "formule",
+      "notes": "Extraction partielle au pilote — latéral/arrière à compléter (texte présent, non encore extrait).",
+      "confiance": "auto"
+    }
+  ],
+  "note_globale": "Recul avant = alignement voisins. Hauteurs par nombre de niveaux. Logements par formule. COS/CSS absents. MIX-u (Mamer+Capellen) présent dans le doc, non détaillé au pilote."
+}

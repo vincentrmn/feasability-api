@@ -1,0 +1,53 @@
+{
+  "commune": "Junglinster",
+  "sources": [
+    { "doc": "PAP QE partie écrite (par chapitre)", "version_date": "2023-10-27" },
+    { "doc": "PAG partie écrite", "version_date": "2024-12" },
+    { "doc": "RBVS", "version_date": null, "note": "non fourni au pilote" }
+  ],
+  "secteurs": [
+    {
+      "code_pap": "HAB-1", "zone_pag": ["HAB-1"], "regime": "QE",
+      "libelle": "Quartiers situés en zones d'habitation 1",
+      "recul_avant":   { "type": "fixe", "min_m": 4, "max_m": 8, "source_article": "Art. 1.4",
+                          "note": "6m devant portes de garage. Alignement voisins possible en DÉROGATION (art. 1.4/1.5), pas la règle de base." },
+      "recul_lateral": { "type": "fixe", "min_m": 3, "zero_si_accole": true, "source_article": "Art. 1.4",
+                          "note": "min 4m si >3 niveaux" },
+      "recul_arriere": { "type": "fixe", "min_m": 9, "source_article": "Art. 1.4" },
+      "profondeur_max_m": 15, "bande_construction_max_m": 25,
+      "hauteur_modele": "par_niveaux",
+      "hauteur_par_niveaux": [
+        { "niveaux": 2, "corniche_m": 7.5, "faite_m": 13.5 }
+      ],
+      "niveaux_sous_sol_max": "libre",
+      "cos_max": null, "css_max": null,
+      "logements_modele": "graphique",
+      "logements_max_par_construction": null,
+      "source_articles": { "bande": "Art. 1.2", "reculs": "Art. 1.4", "hauteurs": "Art. 1.8", "logements": "partie graphique (Chap. 1.I.1)" },
+      "notes": "Degré d'utilisation exprimé géométriquement (bande 25m + reculs + niveaux), pas en COS/CSS. Nb logements et nb niveaux pleins fixés dans la PARTIE GRAPHIQUE. Dérogations 'recul respecté en moyenne' pour parcelles obliques.",
+      "confiance": "auto"
+    },
+    {
+      "code_pap": "MIX-v", "zone_pag": ["MIX-v"], "regime": "QE",
+      "libelle": "Quartiers situés en zones mixtes villageoises",
+      "recul_avant":   { "type": "fixe", "min_m": 4, "max_m": 8, "source_article": "Art. 3.4",
+                          "note": "alignement voisins en dérogation" },
+      "recul_lateral": { "type": "fixe", "min_m": 3, "zero_si_accole": true, "source_article": "Art. 3.4" },
+      "recul_arriere": { "type": "fixe", "min_m": 6, "source_article": "Art. 3.4" },
+      "profondeur_max_m": 15, "bande_construction_max_m": 30,
+      "hauteur_modele": "par_niveaux",
+      "hauteur_par_niveaux": [
+        { "niveaux": 2, "corniche_m": 7.5, "faite_m": 13.5, "acrotere_m": 8 },
+        { "niveaux": 3, "corniche_m": 10.5, "faite_m": 16.5, "acrotere_m": 11 },
+        { "niveaux": 4, "corniche_m": null, "faite_m": null, "acrotere_m": 14 }
+      ],
+      "niveaux_sous_sol_max": "libre",
+      "cos_max": null, "css_max": null,
+      "logements_modele": "graphique",
+      "source_articles": { "bande": "Art. 3.2", "reculs": "Art. 3.4", "hauteurs": "Art. 3.8" },
+      "notes": "Nb niveaux pleins fixé dans la partie graphique. Même modèle géométrique que HAB-1.",
+      "confiance": "auto"
+    }
+  ],
+  "note_globale": "Recul avant FIXE (alignement seulement en dérogation) — modèle opposé à Bertrange/Mamer. Hauteurs par niveaux. Nb logements + nb niveaux en partie graphique → null + flag. PAP QE publié par chapitre (1 PDF/zone)."
+}
