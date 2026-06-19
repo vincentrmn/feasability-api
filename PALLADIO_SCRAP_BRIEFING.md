@@ -212,23 +212,36 @@ Couches (cf. plan béton) :
    logements modélisés, `source_articles` par champ.
 2. **Données 4 communes** — FAIT (`communes/*.json`).
 3. **Prompts d'extraction** — FAIT (`prompts/`).
-4. **Moteur adaptatif (recul avant)** — cœur FAIT + testé hors réseau :
-   `compute_recul_avant_effectif()` dispatch {fixe, lie_hauteur, alignement_voisins}
-   dans `palladio_engine.py` ; tests `palladio_scrap/test_alignment.py` (5/5 OK).
-   **Reste** : câbler dans `calculer_palladio_full` (lire `methode` depuis Airtable,
-   fetch bâtiments voisins via `fetch_buildings` collection 2214 déjà présente) +
-   tester en réel sur Railway.
-5. **Alignement par bâtiments voisins** — `alignment_band_ra()` FAIT (réutilise la
-   couche bâtiments Sprint 3). Recul avant effectif = moyenne des distances façade
-   des voisins à la ligne de voirie ; fallback chiffré si 0 voisin.
-6. **Justification + liens articles** — le dispatch renvoie déjà `{type, recul_m,
-   source_article, ...}`. **Reste** : surfacer dans la sortie + HTML debug.
+4. **Moteur adaptatif (recul avant)** — FAIT + câblé. `compute_recul_avant_effectif()`
+   dispatch {fixe, lie_hauteur, alignement_voisins} + câblage dans
+   `calculer_palladio_full` (params `recul_avant_methode` + `corniche_effective_m`,
+   re-calcul de l'enveloppe, sortie `recul_avant_adaptatif`). **Gate** : sans
+   `recul_avant_methode`, comportement prod strictement inchangé. Tests 5/5 OK.
+5. **Alignement par bâtiments voisins** — FAIT. `alignment_band_ra()` réutilise
+   `fetch_buildings` (collection 2214). Recul avant = moyenne des distances façade
+   des voisins à la ligne de voirie ; fallback chiffré si 0 voisin. **À calibrer
+   sur parcelles réelles Railway** (sélection des voisins adjacents = heuristique v0.1).
+6. **Justification + liens articles** — le dispatch renvoie `{type, recul_m,
+   source_article, fronts_m, ...}` dans `recul_avant_adaptatif`. **Reste** : HTML debug.
 7. **Pipeline déployé** (Railway/n8n) — à faire : LOCATE (WebSearch + sites
    communaux) → download → pdf→md → extraction (prompts) → JSON schéma → upsert
-   Airtable `Confiance=auto`. Vision (Opus) réservée au graphique (casier NQ,
-   logements/niveaux graphiques Junglinster).
-8. **Migration Airtable** — ajouter les champs `[NEW]` typés + écrire les 4 communes.
-   Additif (ne pas casser les field IDs prod Strassen). Relu par Vincent ensuite.
+   Airtable via `airtable_sync.py`. Vision (Opus) réservée au graphique.
+8. **Migration Airtable** — FAIT (2026-06-19). 9 champs typés ajoutés à `Zones_PAG`
+   (additifs) + 8 secteurs écrits (Bertrange/Mamer/Junglinster, `Confiance=auto`) +
+   4 lignes Strassen alignées (`Confiance=valide`). Script rejouable : `airtable_sync.py`.
+
+**Déploiement** : `main` fast-forwardé sur la branche (2026-06-19) → Railway redéploie.
+Le câblage moteur est live mais **dormant** tant que le workflow n8n `XFOhmez4MtTnmtnL`
+ne passe pas `recul_avant_methode` dans le payload (bascule = étape suivante). Donc
+`/palladio/calcul` et `/full` actuels (Strassen) sont inchangés.
+
+### 10.5. Reste à faire (état au 2026-06-19)
+- **Bascule n8n** : faire passer `recul_avant_methode` + `corniche_effective_m` depuis
+  Airtable dans le payload `/palladio/calcul/full` (procédure §4.3, workflow complet).
+- **Calibrer l'alignement** sur une parcelle réelle de Bertrange (Railway) : affiner
+  la sélection des bâtiments voisins adjacents (corridor latéral de la façade).
+- **HTML debug** : afficher `recul_avant_adaptatif` (méthode + recul retenu + fronts voisins).
+- **Pipeline LOCATE/DOWNLOAD** sur Railway/n8n pour scaler au-delà des 4 communes pilotes.
 
 ### 10.4. Règle d'or moteur (dégradation gracieuse)
 Zone contextuelle sans voisins calculables, ou donnée graphique manquante → calculer
