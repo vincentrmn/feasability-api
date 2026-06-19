@@ -908,6 +908,12 @@ def compute_recul_avant_effectif(methode: Dict[str, Any],
         fallback = float(fallback) if fallback is not None else 6.0
         ra, ainfo = alignment_band_ra(p1, p2, neighbor_polys_luref or [],
                                       centroid, fallback)
+        # Garde-fou : un alignement degenere (~0) n'est jamais un recul valide en
+        # zone de faible densite -> on retombe sur le fallback chiffre.
+        if ra is None or ra < 0.5:
+            ra = fallback
+            ainfo["fallback_used"] = True
+            ainfo["raison"] = ainfo.get("raison") or "alignement_degenere(<0.5m)"
         just.update(ainfo)
         just["recul_m"] = round(ra, 2)
         return ra, just
@@ -1883,10 +1889,22 @@ def calculer_palladio_full(
                 neighbor_polys_luref=neighbor_polys,
                 corniche_effective_m=corniche_effective_m)
         except Exception as ex:
-            print(f"[palladio recul] WARN recul avant adaptatif a echoue, garde scalaire : {ex}")
-            recul_avant_effectif = recul_avant_m
-            recul_avant_just = {"type": "fixe", "recul_m": recul_avant_m,
+            print(f"[palladio recul] WARN recul avant adaptatif a echoue, fallback : {ex}")
+            fb = (recul_avant_methode.get("fallback_m")
+                  or recul_avant_methode.get("plancher_m") or recul_avant_m or 0.0)
+            recul_avant_effectif = float(fb)
+            recul_avant_just = {"type": recul_avant_methode.get("type", "fixe"),
+                                "recul_m": float(fb),
                                 "source": f"fallback_erreur_{type(ex).__name__}"}
+        # Filet final : un recul avant nul vient toujours d'un trou de donnee
+        # (min vide + adaptatif KO), jamais d'une regle reelle -> fallback.
+        if recul_avant_effectif is None or recul_avant_effectif < 0.5:
+            fb = (recul_avant_methode.get("fallback_m")
+                  or recul_avant_methode.get("plancher_m") or 0.0)
+            if fb and fb >= 0.5:
+                recul_avant_effectif = float(fb)
+                recul_avant_just["recul_m"] = float(fb)
+                recul_avant_just["source"] = "filet_recul_nul"
 
     # ---- 3bis. Re-calcul enveloppe : recul 0 sur murs mitoyens batis +
     # recul avant effectif si adaptatif. ----
