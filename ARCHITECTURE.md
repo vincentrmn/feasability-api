@@ -11,10 +11,12 @@ dans Airtable ; les géodonnées chez geoportail.lu.
 
 ```
 Utilisateur (navigateur)
-   │  GET /webhook/palladio/calcul?address=...
+   │  GET /webhook/palladio            → page d'accueil (formulaire + cockpit)
+   │  GET /webhook/palladio/calcul?address=...  → résultat d'une adresse
    ▼
 n8n  «Palladio»  (XFOhmez4MtTnmtnL, Railway n8n-production-8929d)
-   │  Webhook Calcul
+
+  Branche Calcul (Webhook Calcul) :
    ├─ Geocodage v4 ............ apiv4.geoportail.lu  → parcel_key, lon/lat
    ├─ Parcelle 359 ............ features.geoportail.lu/collections/359
    ├─ Zone PAG 698/28 ......... features.geoportail.lu/collections/698/28  → code_zone
@@ -23,6 +25,12 @@ n8n  «Palladio»  (XFOhmez4MtTnmtnL, Railway n8n-production-8929d)
    ├─ Calcul Palladio ......... POST web-production-afd8d/palladio/calcul/full/html
    ├─ Assemble Palladio Page .. (Code) passe-plat : récupère le HTML renvoyé
    └─ Respond JSON ............ renvoie le HTML (text/html)
+
+  Branche Page d'accueil (Webhook Form) :
+   ├─ List Zones PAG / Stationnement / Velo / Servitudes / PAP NQ / Communes (Airtable)
+   ├─ Build Landing Payload ... (Code) agrège les 6 tables
+   ├─ Render Landing .......... POST web-production-afd8d/palladio/landing/html
+   └─ Serve Form HTML ......... renvoie la page (formulaire + cockpit de couverture)
 ```
 
 ## API FastAPI (`web-production-afd8d.up.railway.app`)
@@ -35,11 +43,13 @@ Déployée depuis ce repo (branche `main`, auto-deploy Railway, healthcheck `/he
 | `palladio_api.py` | Contrat HTTP : modèles `PalladioRequest`/`PalladioFullRequest` + 3 routes. Aucune logique métier. |
 | `palladio_engine.py` | **Le moteur** : enveloppe (reculs + voirie cadastrale + mitoyenneté bâtie + recul avant adaptatif), SCB, logements, parkings, type construction, warnings. |
 | `palladio_render.py` | Génère la page HTML pédagogique (9 étapes + schémas SVG) depuis la réponse moteur. |
+| `cockpit_render.py` | Page d'accueil : formulaire d'adresse + cockpit de couverture des communes (calcul de statut + rendu). |
 
 ### Routes
 - `POST /palladio/calcul` — enveloppe + voirie (Sprint 1/1.5), JSON.
 - `POST /palladio/calcul/full` — enveloppe + SCB + logements + parkings + warnings, JSON.
 - `POST /palladio/calcul/full/html` — idem + **rendu HTML** (consommé par n8n).
+- `POST /palladio/landing/html` — page d'accueil (formulaire + cockpit), depuis les tables Airtable fournies par n8n.
 - `GET /` , `GET /health` — smoke test / statut.
 
 Legacy retiré le 2026-06-20 : moteur OBB v2.3, routes `/calcul` et `/v2/calcul`,
