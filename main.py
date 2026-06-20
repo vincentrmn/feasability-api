@@ -11,9 +11,11 @@ V2.1 — Ajout emprise_polygon_luref:
  
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
 from palladio_engine import calculer_emprise_palladio, calculer_palladio_full, PalladioError
+from palladio_render import render_palladio_html
 import math
 import json
 # Import défensif de pyproj : si absent, l'API démarre quand même
@@ -578,6 +580,10 @@ class PalladioFullRequest(PalladioRequest):
     corniche_effective_m: Optional[float] = Field(
         default=None,
         description="Hauteur a la corniche, pour le recul avant lie_hauteur.",
+    )
+    adresse: Optional[str] = Field(
+        default="",
+        description="Adresse affichee dans la page HTML (route /full/html).",
     )
 # ============================================================
 # MAPPING AIRTABLE → MOTEUR
@@ -1499,3 +1505,26 @@ def calcul_palladio_full(req: PalladioFullRequest):
     except PalladioError as e:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/palladio/calcul/full/html", response_class=HTMLResponse)
+def calcul_palladio_full_html(req: PalladioFullRequest):
+    """
+    Idem /palladio/calcul/full mais renvoie directement la page HTML (renderer
+    versionne `palladio_render`). Permet a n8n de ne plus assembler le HTML
+    lui-meme (retrait du gros node). Ne leve pas : enveloppe vide -> page degradee.
+    """
+    resp = calculer_palladio_full(
+        parcel_geometry_wgs84=req.parcel_geometry_wgs84,
+        point_geocode_wgs84=req.point_geocode_wgs84,
+        recul_avant_m=req.recul_avant_m,
+        recul_lateral_m=req.recul_lateral_m,
+        recul_arriere_m=req.recul_arriere_m,
+        zone_pag=req.zone_pag,
+        profondeur_max_m=req.profondeur_max_m,
+        parcelle_id=req.parcelle_id,
+        corriger_hab1=req.corriger_hab1,
+        recul_avant_methode=req.recul_avant_methode,
+        corniche_effective_m=req.corniche_effective_m,
+    )
+    return HTMLResponse(content=render_palladio_html(resp, req.adresse or ""))
