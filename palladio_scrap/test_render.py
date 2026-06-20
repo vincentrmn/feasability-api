@@ -69,12 +69,12 @@ def test_parite_9_etapes():
               "Mitoyenn", "poser le b", "surface de plancher",
               "Logements et stationnement", "Points de vigilance", "En r"]:
         assert t in h, f"section manquante : {t}"
-    # schemas SVG multiples + candidats + cadastral overlay + cotes
-    assert h.count("<svg") >= 6, "il manque des schemas SVG"
+    # schemas matplotlib (img) multiples + candidats + cotes
+    assert h.count("schema-img") >= 6, "il manque des schemas (img matplotlib)"
     assert "score 24.93" in h and "retenu" in h, "candidats fond absents"
-    assert "mur mitoyen" in h, "mitoyennete non dessinee"
+    assert "mitoyen" in h, "mitoyennete non rendue"
     assert "Gabarit au sol" in h, "cotes emprise absentes"
-    print(f"OK parite : 9 etapes, {h.count('<svg')} schemas SVG, candidats fond, cotes, mitoyennete")
+    print(f"OK parite : 9 etapes, {h.count('schema-img')} schemas img, candidats fond, cotes, mitoyennete")
 
 
 def test_enveloppe_vide():
