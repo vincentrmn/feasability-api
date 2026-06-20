@@ -2006,6 +2006,7 @@ def calculer_palladio_full(
         "voirie": base["voirie"],
         "fond": base["fond"],
         "reculs_appliques": base["reculs_appliques"],
+        "recul_avant_adaptatif": base.get("recul_avant_adaptatif"),
         "emprise": base["emprise"],
         "cos_applique": cos_applique,
         "traces_reculs": base["traces_reculs"],
