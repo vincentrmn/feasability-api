@@ -160,6 +160,17 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
         a, b = P[idx], P[(idx + 1) % n]
         return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
 
+    def edge_out(idx, dist):
+        """Point au milieu de l'arete, deporte vers l'EXTERIEUR (loin du centroide)."""
+        a, b = P[idx], P[(idx + 1) % n]
+        mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(dx, dy) or 1
+        nx, ny = -dy / L, dx / L
+        if nx * (cx - mx) + ny * (cy - my) > 0:
+            nx, ny = -nx, -ny
+        return [mx + nx * dist, my + ny * dist]
+
     def dist_pt_seg(p0, a, b):
         dx, dy = b[0] - a[0], b[1] - a[1]
         L2 = dx * dx + dy * dy
@@ -186,15 +197,16 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
                    f'<strong>{_n(_poly_area(P))} m²</strong>. Le point bleu est l\'adresse géocodée.</div>')
 
     # --- schema 3a : voirie (distances + overlay cadastral) ---
+    # On ne cote QUE la facade rue retenue (deportee a l'exterieur) : sur les parcelles
+    # etroites/en drapeau, coter chaque arete rendait le schema illisible.
     ev = ""
     for i in range(n):
         a, b = P[i], P[(i + 1) % n]
-        win = (i == idxV)
-        cls = "edge-voirie-winner" if win else "edge-voirie-other"
-        m = edge_mid(i)
-        dd = dist_pt_seg(pt, a, b)
-        ev += (f'<line x1="{px(a[0])}" y1="{py(a[1])}" x2="{px(b[0])}" y2="{py(b[1])}" class="{cls}"/>'
-               f'<text x="{px(m[0])}" y="{py(m[1])}" class="{"lbl-edge-winner" if win else "lbl-edge"}">{_n(dd)}m</text>')
+        cls = "edge-voirie-winner" if i == idxV else "edge-voirie-other"
+        ev += f'<line x1="{px(a[0])}" y1="{py(a[1])}" x2="{px(b[0])}" y2="{py(b[1])}" class="{cls}"/>'
+    ddw = dist_pt_seg(pt, P[idxV], P[(idxV + 1) % n])
+    wlab = edge_out(idxV, loff)
+    ev += f'<text x="{px(wlab[0])}" y="{py(wlab[1])}" class="lbl-edge-winner">rue {_n(ddw)}m</text>'
     overlay, cad_cap = "", ""
     det = voirie.get("detection") or {}
     ecs = det.get("edges_classified") or []
@@ -212,8 +224,9 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     schVoirie = (f'<svg viewBox="{vb}" class="schema-svg"><polygon points="{p2svg(P)}" class="parcel-fill-light"/>'
                  f'{ev}{overlay}{vlabels}<line x1="{px(pt[0])}" y1="{py(pt[1])}" x2="{px(wmid[0])}" '
                  f'y2="{py(wmid[1])}" class="line-perp"/>{ptgeo}</svg>'
-                 f'<div class="schema-caption">Distance du point d\'adresse à chaque côté. La façade sur '
-                 f'rue retenue est l\'arête <strong>{_esc(voirie.get("edge_label"))}</strong>.{cad_cap}</div>')
+                 f'<div class="schema-caption">On repère la façade sur rue (la <em>voirie</em>) : '
+                 f'arête <strong>{_esc(voirie.get("edge_label"))}</strong>, à {_n(ddw)} m de l\'adresse '
+                 f'(trait bleu).{cad_cap}</div>')
 
     # --- schema 3b : candidats fond ---
     cands = fond.get("candidats") or []
