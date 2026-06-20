@@ -21,7 +21,9 @@ la page d'accueil.
 ## Fichiers
 - **`Build_Palladio_Payload.js`** — mappe les règles Airtable dans `zone_pag`, construit
   le payload, la **méthode de recul avant** typée (Palladio Scrap) et le **contexte**
-  d'affichage (adresse, label parcelle, COS/CSS, hauteurs).
+  d'affichage (adresse, label parcelle, COS/CSS, hauteurs, + **références d'articles**
+  PAG/PAP : `articles` depuis `Source_articles_json`, `article_pag`, `article_pap_qe`,
+  affichées dans les justifications de la page résultat).
 - **`Assemble_Palladio_Page.js`** — **passe-plat** : le HTML est désormais rendu côté
   serveur (`palladio_render.py`, route `/palladio/calcul/full/html`). Ce node récupère
   juste le HTML renvoyé. L'ancien node de 39 Ko a été supprimé.
