@@ -235,7 +235,9 @@ def render_landing_html(
     return (
         '<!doctype html><html lang="fr"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>Palladio — Étude de faisabilité</title>'
+        '<title>Palladio</title>'
+        '<meta property="og:title" content="Palladio">'
+        '<meta name="twitter:title" content="Palladio">'
         '<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
         f'<style>{_styles()}</style></head><body>'
