@@ -48,6 +48,13 @@ function parseNiveaux(v) {
 }
 const niv = parseNiveaux(rules.Niveaux_hors_sol_max);
 
+function parseArticles(v) {
+  const s = extractAirtable(v);
+  if (!s || typeof s !== 'string') return {};
+  try { const o = JSON.parse(s); return (o && typeof o === 'object') ? o : {}; }
+  catch (e) { return {}; }
+}
+
 const zone_pag = {
   code_zone: zoneInfo.code_zone,
   nom_zone: extractAirtable(rules.Nom_zone),
@@ -85,6 +92,11 @@ const payload = {
       Hauteur_faite_max_m: toFloat(rules.Hauteur_faite_max_m),
       DL_max_log_ha: toFloat(rules.DL_max_log_ha),
     },
+    // references d'articles pour les justifications (point 8). Map granulaire
+    // {reculs, profondeur, bande, hauteurs, logements} + articles generaux.
+    articles: parseArticles(rules.Source_articles_json),
+    article_pag: extractAirtable(rules.Article_PAG),
+    article_pap_qe: extractAirtable(rules.Article_PAP_QE),
   },
 };
 

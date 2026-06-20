@@ -63,6 +63,18 @@ def _esc(s):
     return _h.escape(str(s)) if s is not None else ""
 
 
+def _art_ref(arts, *keys):
+    """Petite annotation d'article reglementaire ' (Art. X)' si dispo, sinon ''.
+    Plusieurs cles possibles : la premiere renseignee gagne."""
+    if not arts:
+        return ""
+    for k in keys:
+        v = arts.get(k)
+        if v:
+            return f' <span class="art">({_esc(v)})</span>'
+    return ""
+
+
 # ---------------- rendu principal ----------------
 
 def render_palladio_html(response: Dict[str, Any], adresse: str = "",
@@ -368,6 +380,14 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     hC = regles.get("Hauteur_corniche_max_m") or "?"
     hF = regles.get("Hauteur_faite_max_m") or "?"
 
+    # references d'articles PAG/PAP (contexte n8n) : map granulaire + generaux
+    arts = ctx.get("articles") or {}
+    art_pag = ctx.get("article_pag")
+    art_pap = ctx.get("article_pap_qe")
+    # le recul avant adaptatif porte deja sa propre source d'article (moteur)
+    if adapt.get("source_article") and not arts.get("reculs"):
+        arts = dict(arts); arts["reculs"] = adapt.get("source_article")
+
     adapt_expl = ""
     if adapt.get("type") == "alignement_voisins":
         adapt_expl = (" Ce recul est <em>aligné sur les façades des voisins</em>"
@@ -377,18 +397,28 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
                    f"cadastre : parcelle <strong>{_esc(parcel_label)}</strong>, d'une surface de "
                    f"<strong>{_f(terrain)} m²</strong>.")
 
-    regLi = (f"<li>Recul avant (rue → maison) : <strong>{raS} m</strong>{adapt_expl}</li>"
-             f"<li>Reculs latéraux : <strong>{rl} m</strong></li>"
-             f"<li>Recul arrière : <strong>{rr} m</strong></li>")
+    art_reculs = _art_ref(arts, "reculs")
+    regLi = (f"<li>Recul avant (rue → maison) : <strong>{raS} m</strong>{adapt_expl}{art_reculs}</li>"
+             f"<li>Reculs latéraux : <strong>{rl} m</strong>{art_reculs}</li>"
+             f"<li>Recul arrière : <strong>{rr} m</strong>{_art_ref(arts, 'profondeur', 'reculs')}</li>")
     if scb:
-        regLi += f'<li>Hauteur : <strong>{scb.get("niveaux_pleins")} niveaux{" + combles" if scb.get("combles") else ""}</strong></li>'
+        regLi += (f'<li>Hauteur : <strong>{scb.get("niveaux_pleins")} niveaux{" + combles" if scb.get("combles") else ""}</strong>'
+                  f'{_art_ref(arts, "hauteurs")}</li>')
     if cos != "?":
         regLi += f"<li>COS (emprise au sol max) : <strong>{cos}</strong></li>"
     if css != "?":
         regLi += f"<li>CUS/CSS : <strong>{css}</strong></li>"
+    # ligne sources : articles generaux PAG / PAP QE
+    src_bits = []
+    if art_pag:
+        src_bits.append(f"PAG {_esc(art_pag)}")
+    if art_pap:
+        src_bits.append(f"PAP QE {_esc(art_pap)}")
+    src_line = (f'<p class="sources">Sources réglementaires : {" · ".join(src_bits)}.</p>'
+                if src_bits else "")
     txtRegles = (f"Votre terrain est classé en zone <strong>{_esc(code_zone)}</strong>"
                  f"{(' (' + _esc(nomZone) + ')') if nomZone else ''} au PAG (Plan d'Aménagement Général), "
-                 f"le règlement communal. Voici ce qu'il impose ici :<ul>{regLi}</ul>")
+                 f"le règlement communal. Voici ce qu'il impose ici :<ul>{regLi}</ul>{src_line}")
 
     txtRueFond = (f"On repère le côté sur rue (la <em>voirie</em>) et le fond. La façade sur rue est l'arête "
                   f"<strong>{_esc(voirie.get('edge_label'))}</strong>, détectée par adjacence cadastrale "
@@ -417,7 +447,8 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     if scb:
         txtScb = (f"On empile les niveaux autorisés. La somme des planchers est la <strong>SCB</strong> "
                   f"(Surface Construite Brute) : <strong>{scb.get('scb_totale_m2')} m²</strong> sur "
-                  f"{scb.get('niveaux_pleins')} niveaux{' + combles' if scb.get('combles') else ''}.")
+                  f"{scb.get('niveaux_pleins')} niveaux{' + combles' if scb.get('combles') else ''}."
+                  f"{_art_ref(arts, 'bande', 'hauteurs')}")
         cus = scb.get("cus_applique")
         if cus and cus.get("limitant"):
             txtScb += f" Le plafond de densité (CUS) limite à <strong>{cus.get('scb_max_cus_m2')} m²</strong>."
@@ -432,7 +463,7 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
                       f"<strong>{lg.get('nb_logements')} logement{'s' if lg.get('nb_logements') > 1 else ''}</strong>")
             if (lg.get("scb_commerce_m2") or 0) > 0:
                 txtLog += " + un commerce en rez-de-chaussée (zone mixte)"
-            txtLog += "."
+            txtLog += "." + _art_ref(arts, "logements")
         else:
             txtLog = "Cette zone n'autorise pas le logement (ou surface insuffisante) : <strong>aucun logement</strong>."
         if pk:
@@ -522,6 +553,7 @@ def _styles():
             ".section-num{flex:0 0 26px;width:26px;height:26px;border-radius:50%;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600}"
             ".section-title{font-size:16px;font-weight:600;letter-spacing:-.01em}"
             ".section-text{font-size:14px;color:#333;line-height:1.65}.section-text ul{margin:10px 0 2px 18px}.section-text li{margin:4px 0}"
+            ".art{color:var(--muted);font-size:.85em;font-weight:400}.sources{font-size:12px;color:var(--muted);margin:10px 0 0}"
             ".schema{margin-top:16px}.schema-svg{width:100%;height:auto;max-height:440px;display:block;background:#fff;border:1px solid #f0f0f0;border-radius:8px}"
             ".schema-caption{font-size:13px;color:#555;margin-top:10px;line-height:1.55}.schema-content{padding:4px 0}"
             ".text-row{display:grid;grid-template-columns:minmax(120px,210px) 1fr;gap:12px;padding:9px 0;border-bottom:1px solid #f0f0f0}.text-row:last-child{border-bottom:0}"
