@@ -42,7 +42,7 @@ RESP_917 = {
 def test_recul_avant_lu_sur_moteur():
     h = render_palladio_html(RESP_917, "5 rue de Mamer, Bertrange")
     assert "5.34 m" in h, "le recul avant doit etre 5.34 (moteur), pas le fallback"
-    assert "alignement" in h.lower() or "Aligne" in h
+    assert "voisin" in h.lower(), "doit expliquer l'alignement sur les voisins"
     assert "4 m —" not in h, "ne doit pas afficher le fallback 4 comme recul avant"
     print("OK recul avant = 5.34 (moteur), pas 4 (payload)")
 
