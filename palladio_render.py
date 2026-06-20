@@ -107,16 +107,26 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     if not P:
         return _error_page(adresse, "Géométrie parcelle manquante.")
 
-    # bbox + projection (identiques a l'ancien node)
+    # bbox + projection. On normalise vers un canvas fixe (~100 unites sur le grand
+    # cote) avec marge proportionnelle : traits et textes restent nets et lisibles
+    # quelle que soit la taille de la parcelle (correctif lisibilite schemas).
     xs = [p[0] for p in P] + [p[0] for p in E] + [pt[0]]
     ys = [p[1] for p in P] + [p[1] for p in E] + [pt[1]]
-    xmin, xmax, ymin, ymax = min(xs) - 8, max(xs) + 8, min(ys) - 8, max(ys) + 8
+    rW, rH = (max(xs) - min(xs)), (max(ys) - min(ys))
+    span = max(rW, rH) or 1
+    margin = span * 0.10 + 1.5
+    loff = span * 0.05 + 1.2  # deport des labels sommets (metres)
+    doff = span * 0.045 + 1.0  # deport des cotes d'emprise (metres)
+    xmin, xmax = min(xs) - margin, max(xs) + margin
+    ymin, ymax = min(ys) - margin, max(ys) + margin
     W, H = xmax - xmin, ymax - ymin
-    vb = f"0 0 {W:.2f} {H:.2f}"
+    S = max(W, H) or 1
+    F = 100.0 / S  # facteur metres -> unites canvas
+    vb = f"0 0 {W * F:.2f} {H * F:.2f}"
 
-    def px(x): return f"{x - xmin:.2f}"
-    def py(y): return f"{H - (y - ymin):.2f}"
-    def p2svg(pts): return " ".join(f"{x - xmin:.2f},{H - (y - ymin):.2f}" for x, y in pts)
+    def px(x): return f"{(x - xmin) * F:.2f}"
+    def py(y): return f"{(H - (y - ymin)) * F:.2f}"
+    def p2svg(pts): return " ".join(f"{(x - xmin) * F:.2f},{(H - (y - ymin)) * F:.2f}" for x, y in pts)
 
     cx = sum(p[0] for p in P) / len(P)
     cy = sum(p[1] for p in P) / len(P)
@@ -164,10 +174,10 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     for i, p in enumerate(P):
         ox, oy = p[0] - cx, p[1] - cy
         L = math.hypot(ox, oy) or 1
-        lx, ly = p[0] + ox / L * 1.5, p[1] + oy / L * 1.5
+        lx, ly = p[0] + ox / L * loff, p[1] + oy / L * loff
         vlabels += f'<text x="{px(lx)}" y="{py(ly)}" class="lbl-vertex">{chr(65 + i)}</text>'
-    vdots = "".join(f'<circle cx="{px(p[0])}" cy="{py(p[1])}" r="0.5" class="dot-vertex"/>' for p in P)
-    ptgeo = f'<circle cx="{px(pt[0])}" cy="{py(pt[1])}" r="0.8" class="dot-geocode"/>'
+    vdots = "".join(f'<circle cx="{px(p[0])}" cy="{py(p[1])}" r="0.9" class="dot-vertex"/>' for p in P)
+    ptgeo = f'<circle cx="{px(pt[0])}" cy="{py(pt[1])}" r="1.4" class="dot-geocode"/>'
 
     # --- schema 1 : parcelle ---
     schParcelle = (f'<svg viewBox="{vb}" class="schema-svg"><polygon points="{p2svg(P)}" class="parcel-fill"/>'
@@ -191,7 +201,7 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     if ecs:
         for ec in ecs:
             color = "#c9a961" if ec.get("is_voirie") else "#bbb"
-            wdt = "1.5" if ec.get("is_voirie") else "0.6"
+            wdt = "1.4" if ec.get("is_voirie") else "0.5"
             overlay += (f'<line x1="{px(ec["p1"][0])}" y1="{py(ec["p1"][1])}" x2="{px(ec["p2"][0])}" '
                         f'y2="{py(ec["p2"][1])}" stroke="{color}" stroke-width="{wdt}" fill="none"/>')
         nbv = sum(1 for e in ecs if e.get("is_voirie"))
@@ -213,12 +223,12 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
         a, b = P[c["idx_fond"]], P[(c["idx_fond"] + 1) % n]
         chosen = (c["idx_fond"] == idxF)
         stroke = "#000" if chosen else ccol[k % 3]
-        wdt = "2" if chosen else "1.2"
-        dash = "" if chosen else "2,2"
+        wdt = "1.3" if chosen else "0.7"
+        dash = "" if chosen else "1.6,1.6"
         csvg += (f'<line x1="{px(a[0])}" y1="{py(a[1])}" x2="{px(b[0])}" y2="{py(b[1])}" stroke="{stroke}" '
                  f'stroke-width="{wdt}" stroke-dasharray="{dash}" fill="none"/>')
     aW, bW = P[idxV], P[(idxV + 1) % n]
-    vline = f'<line x1="{px(aW[0])}" y1="{py(aW[1])}" x2="{px(bW[0])}" y2="{py(bW[1])}" stroke="#c00" stroke-width="2.5" fill="none"/>'
+    vline = f'<line x1="{px(aW[0])}" y1="{py(aW[1])}" x2="{px(bW[0])}" y2="{py(bW[1])}" stroke="#c00" stroke-width="1.4" fill="none"/>'
     clegend = ""
     for c in cands:
         chosen = c["idx_fond"] == idxF
@@ -240,7 +250,7 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             isp = i in party
             isv = (i == idxV)
             color = "#e08a2e" if isp else ("#2962ff" if isv else "#ccc")
-            wdt = "1.8" if isp else ("1" if isv else "0.5")
+            wdt = "1.6" if isp else ("0.9" if isv else "0.45")
             lbl = ""
             if isp:
                 m = edge_mid(i)
@@ -317,8 +327,8 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
         nx, ny = dy / Ln, -dx / Ln
         if nx * (mx - ecx) + ny * (my - ecy) < 0:
             nx, ny = -nx, -ny
-        mx += nx * 1.6
-        my += ny * 1.6
+        mx += nx * doff
+        my += ny * doff
         edims += f'<text x="{px(mx)}" y="{py(my)}" class="lbl-dim">{_n(L)}m</text>'
     elens.sort(reverse=True)
     dimres = (f' Gabarit au sol : environ <strong>{_n(elens[0])} m × {_n(elens[1])} m</strong>.'
@@ -564,17 +574,17 @@ def _styles():
             ".warn-row{display:flex;gap:10px;align-items:baseline;padding:8px 0;border-bottom:1px solid #f0f0f0;flex-wrap:wrap}"
             ".warn-lvl{font-family:ui-monospace,monospace;font-size:11px;text-transform:uppercase;color:#fff;padding:2px 6px;border-radius:3px}"
             ".warn-code{font-family:ui-monospace,monospace;font-size:12px;color:#888}.warn-msg{font-size:13px;color:#111;flex:1;min-width:200px}"
-            ".parcel-fill{fill:#fafafa;stroke:#111;stroke-width:0.4}.parcel-fill-light{fill:#fafafa;stroke:#ccc;stroke-width:0.3}.parcel-fill-final{fill:#f3f3f3;stroke:#888;stroke-width:0.3}"
-            ".emprise-fill{fill:#111;fill-opacity:0.85;stroke:#000;stroke-width:0.3}.dot-vertex{fill:#111}.dot-geocode{fill:#2962ff}"
-            ".lbl-vertex{font-size:1.8px;font-weight:600;fill:#111;text-anchor:middle;dominant-baseline:middle}"
-            ".edge-voirie-other{stroke:#ccc;stroke-width:0.3;fill:none}.edge-voirie-winner{stroke:#c00;stroke-width:0.8;fill:none}"
-            ".lbl-edge{font-size:1.4px;fill:#888;text-anchor:middle;dominant-baseline:middle}.lbl-edge-winner{font-size:1.6px;fill:#c00;font-weight:600;text-anchor:middle;dominant-baseline:middle}"
-            ".line-perp{stroke:#2962ff;stroke-width:0.3;stroke-dasharray:0.8,0.8;fill:none}.line-recul-lateral{stroke:#555;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}"
-            ".edge-mitoyen{stroke:#e08a2e;stroke-width:1.6;fill:none}.lbl-mito{font-size:1.5px;fill:#e08a2e;font-weight:600;text-anchor:middle;dominant-baseline:middle}"
-            ".lbl-recul{font-size:1.4px;fill:#555;text-anchor:middle;dominant-baseline:middle}"
-            ".lbl-dim{font-size:1.6px;font-weight:600;fill:#fff;paint-order:stroke;stroke:#111;stroke-width:0.3px;text-anchor:middle;dominant-baseline:middle}"
-            ".edge-voirie-thick{stroke:#c00;stroke-width:0.7;fill:none}.edge-fond-thick{stroke:#2a7;stroke-width:0.7;fill:none}"
-            ".line-recul-avant{stroke:#c00;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}.line-recul-arriere{stroke:#2a7;stroke-width:0.4;stroke-dasharray:1.2,1.2;fill:none}.line-recul-prof{stroke:#84c;stroke-width:0.4;stroke-dasharray:0.6,0.6;fill:none}"
-            ".lbl-recul-avant{font-size:1.4px;fill:#c00;font-weight:600;text-anchor:middle;dominant-baseline:middle}.lbl-recul-arriere{font-size:1.4px;fill:#2a7;font-weight:600;text-anchor:middle;dominant-baseline:middle}.lbl-recul-prof{font-size:1.3px;fill:#84c;font-weight:600;text-anchor:middle;dominant-baseline:middle}"
+            ".parcel-fill{fill:#fafafa;stroke:#111;stroke-width:0.5}.parcel-fill-light{fill:#fafafa;stroke:#bbb;stroke-width:0.45}.parcel-fill-final{fill:#f3f3f3;stroke:#888;stroke-width:0.45}"
+            ".emprise-fill{fill:#111;fill-opacity:0.85;stroke:#000;stroke-width:0.5}.dot-vertex{fill:#111}.dot-geocode{fill:#2962ff}"
+            ".lbl-vertex{font-size:4.2px;font-weight:700;fill:#111;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}"
+            ".edge-voirie-other{stroke:#ccc;stroke-width:0.5;fill:none}.edge-voirie-winner{stroke:#c00;stroke-width:1.2;fill:none}"
+            ".lbl-edge{font-size:3.4px;fill:#777;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:0.9;stroke-linejoin:round}.lbl-edge-winner{font-size:3.9px;fill:#c00;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}"
+            ".line-perp{stroke:#2962ff;stroke-width:0.5;stroke-dasharray:1.6,1.6;fill:none}.line-recul-lateral{stroke:#555;stroke-width:0.6;stroke-dasharray:1.8,1.8;fill:none}"
+            ".edge-mitoyen{stroke:#e08a2e;stroke-width:1.7;fill:none}.lbl-mito{font-size:3.4px;fill:#e08a2e;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}"
+            ".lbl-recul{font-size:3.2px;fill:#555;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:0.9;stroke-linejoin:round}"
+            ".lbl-dim{font-size:3.7px;font-weight:700;fill:#fff;paint-order:stroke;stroke:#111;stroke-width:1.1px;text-anchor:middle;dominant-baseline:middle}"
+            ".edge-voirie-thick{stroke:#c00;stroke-width:1.2;fill:none}.edge-fond-thick{stroke:#2a7;stroke-width:1.2;fill:none}"
+            ".line-recul-avant{stroke:#c00;stroke-width:0.6;stroke-dasharray:1.8,1.8;fill:none}.line-recul-arriere{stroke:#2a7;stroke-width:0.6;stroke-dasharray:1.8,1.8;fill:none}.line-recul-prof{stroke:#84c;stroke-width:0.55;stroke-dasharray:1,1;fill:none}"
+            ".lbl-recul-avant{font-size:3.3px;fill:#c00;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}.lbl-recul-arriere{font-size:3.3px;fill:#2a7;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}.lbl-recul-prof{font-size:3px;fill:#84c;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:0.9;stroke-linejoin:round}"
             ".footer{margin-top:48px;padding-top:20px;border-top:1px solid var(--line);display:flex;justify-content:space-between;color:#999;font-size:12px;font-family:ui-monospace,monospace}"
             "@media(max-width:600px){.wrap{padding:18px 14px 60px}.section{padding:16px 14px}.text-row{grid-template-columns:1fr;gap:2px}.hero h1{font-size:20px}.kpi .value-big{font-size:23px}}")
