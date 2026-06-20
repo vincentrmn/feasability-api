@@ -47,7 +47,8 @@ def _val(rec: Dict[str, Any], *keys):
 
 
 def _commune_of(rec: Dict[str, Any]) -> str:
-    return _val(rec, "Commune", "commune")
+    # "Nom" : table Communes (meta) ; "Commune"/"commune" : toutes les autres tables.
+    return _val(rec, "Commune", "commune", "Nom")
 
 
 def _bucket_by_commune(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -81,6 +82,8 @@ def compute_communes_status(
     communes = set(zones_by) | set(stat_by) | set(velo_by) | set(serv_by) | set(nq_by) | set(meta_by)
     out = []
     for c in communes:
+        if not c:
+            continue
         zs = zones_by.get(c, [])
         n_zones = len(zs)
         # zones constructibles « dimensionnees » : recul lateral + arriere renseignes

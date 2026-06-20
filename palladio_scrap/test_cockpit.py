@@ -49,14 +49,17 @@ STAT = [{"Commune": "Strassen"} for _ in range(9)]
 VELO = [{"Commune": "Strassen"} for _ in range(9)]
 SERV = [{"Commune": "Strassen"} for _ in range(12)]
 NQ = [{"Commune": "Strassen"} for _ in range(7)]
-META = [{"Commune": "Strassen", "Statut_extraction": "Complète",
+# Table Communes : cle "Nom" (pas "Commune") — ne doit PAS creer de commune fantome.
+META = [{"Nom": "Strassen", "Statut_extraction": "Complète",
          "Version_PAG": "Version coordonnée 30/01/2025", "Date_reglement_PAG": "2021-03-23"}]
 
 
 def test_status():
     st = compute_communes_status(ZONES, STAT, VELO, SERV, NQ, META)
     by = {s["commune"]: s for s in st}
-    assert set(by) == {"Strassen", "Bertrange", "Mamer", "Junglinster"}
+    assert set(by) == {"Strassen", "Bertrange", "Mamer", "Junglinster"}, set(by)
+    assert len(st) == 4, "pas de commune fantome (table Communes keyee sur Nom)"
+    assert all(s["commune"] for s in st), "aucune commune au nom vide"
     s = by["Strassen"]
     assert s["n_zones"] == 18
     assert s["n_valide"] == 4
