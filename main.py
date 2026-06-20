@@ -585,6 +585,11 @@ class PalladioFullRequest(PalladioRequest):
         default="",
         description="Adresse affichee dans la page HTML (route /full/html).",
     )
+    contexte: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Contexte d'affichage non porte par le moteur (route /full/html) : "
+                    "parcel_label, code_zone, nom_zone, regles (champs Airtable).",
+    )
 # ============================================================
 # MAPPING AIRTABLE → MOTEUR
 # ============================================================
@@ -1527,4 +1532,4 @@ def calcul_palladio_full_html(req: PalladioFullRequest):
         recul_avant_methode=req.recul_avant_methode,
         corniche_effective_m=req.corniche_effective_m,
     )
-    return HTMLResponse(content=render_palladio_html(resp, req.adresse or ""))
+    return HTMLResponse(content=render_palladio_html(resp, req.adresse or "", req.contexte))
