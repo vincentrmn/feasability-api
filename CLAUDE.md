@@ -33,7 +33,7 @@
 
 ## 1. Qui je suis et où je suis
 
-Tu es Claude Code, en mission sur le repo `vincentrmn/feasability-api` (déployé sur Railway à `web-production-afd8d.up.railway.app`). Tu travailles pour **Vincent**, co-fondateur et CEO de **Terravalu** (Luxembourg). Tu n'es pas seul : Jules est co-fondateur dev, il possède la prod legacy (`main.py`). **Tu ne touches pas à `main.py`.** Tu travailles uniquement sur `palladio_engine.py`.
+Tu es Claude Code, en mission sur le repo `vincentrmn/feasability-api` (déployé sur Railway à `web-production-afd8d.up.railway.app`). Tu travailles pour **Vincent**, co-fondateur et CEO de **Terravalu** (Luxembourg). Jules est co-fondateur dev. L'API est maintenant **100% Palladio** : `main.py` est l'entrée minimale (app + `/` + `/health` + `include_router`), les routes sont dans `palladio_api.py`, le moteur dans `palladio_engine.py`, le rendu HTML dans `palladio_render.py`. **Le legacy OBB de Jules a été retiré** (cf. §0). Tu peux toucher à tous ces fichiers.
 
 Vincent communique en **français informel et direct**. Il n'a pas de terminal local, tout passe par GitHub web UI et le HTML debug servi par n8n. **Aucun output terminal verbeux**, aucun étalage d'outils. Réponses courtes, dense quand il le demande, sans bla.
 
@@ -76,23 +76,26 @@ Le B2C sert à **collecter de la donnée comportementale** (qui cherche quoi, o�
 | 3D assets | GitHub statique | `vincentrmn/terravalu-assets` |
 | Documentation projet | Notion | Hub Projet Terravalu |
 
-### 3.1. Repo `vincentrmn/feasability-api`
-- `main.py` — **prod legacy**, ne pas toucher (sauf accord explicite de Vincent et Jules). Contient le pipeline complet v2.3 (OBB + reculs + SCB + logements + parkings).
-- `palladio_engine.py` — **ton terrain**. Moteur nouvelle génération. Sprint 1 + 1.5 terminés. Sprint 2 à venir.
-- `requirements.txt` — doit contenir au minimum : `fastapi`, `shapely`, `pyproj`, `requests`. Vérifier avant tout déploiement Sprint 1.5+.
+### 3.1. Repo `vincentrmn/feasability-api` (archi à jour — voir `ARCHITECTURE.md`)
+- `main.py` — app FastAPI **minimale** (~60 lignes : CORS + `/` + `/health` + `include_router`). Point d'entrée `uvicorn main:app`.
+- `palladio_api.py` — routes Palladio (modèles + 3 endpoints).
+- `palladio_engine.py` — **le moteur** (enveloppe, voirie, mitoyenneté, recul adaptatif, SCB, logements, parkings, warnings).
+- `palladio_render.py` — rendu HTML pédagogique (sorti du node n8n).
+- `palladio_scrap/` — schéma typé, données communes, prompts, sync Airtable, tests.
+- `requirements.txt` — `fastapi`, `shapely`, `pyproj`, `requests` au minimum.
 
-### 3.2. Endpoints du moteur
-- `GET /` — liste les routes FastAPI. **Sert de smoke test post-déploiement Railway**.
-- `POST /palladio/calcul` — calcul enveloppe (Sprint 1 + 1.5). Documenté section 6.
-- `POST /palladio/calcul/full` — **à créer Sprint 2** (enveloppe + SCB + logements + parkings + warnings).
+### 3.2. Endpoints
+- `GET /` — liste les routes (smoke test post-déploiement Railway).
+- `POST /palladio/calcul` — enveloppe + voirie (JSON).
+- `POST /palladio/calcul/full` — enveloppe + SCB + logements + parkings + warnings (JSON).
+- `POST /palladio/calcul/full/html` — idem + rendu HTML (consommé par n8n).
 
 ---
 
 ## 4. Workflows n8n — ce qui se touche, ce qui ne se touche pas
 
-### 4.1. Workflows INTOUCHABLES (prod legacy)
-- `fNY7LUzIeBHutwcT` — workflow production legacy basé sur `main.py`. **NE JAMAIS TOUCHER.**
-- `gdawiNp1oMoYcwAL` — draft legacy. **NE JAMAIS TOUCHER.**
+### 4.1. Workflows legacy — RETIRÉS (2026-06-20)
+- `fNY7LUzIeBHutwcT` (MVP Feasibility) et `gdawiNp1oMoYcwAL` (Terravalu draft) : basés sur le moteur OBB legacy, **désactivés et archivés** (ne servaient plus). Plus rien n'appelle `/calcul` ni `/v2/calcul`.
 
 ### 4.2. Workflow Palladio actif
 - `XFOhmez4MtTnmtnL` — **workflow Palladio**. Publié, version active `906e740c-6085-4673-9bdf-4aacdcac55bd` (Sprint 1.5, ajoute `parcelle_id` au payload).
@@ -449,7 +452,7 @@ Avant de toucher quoi que ce soit, vérifie dans cet ordre :
 
 1. **Tu as lu ce CLAUDE.md en entier**. Si non, fais-le.
 2. **Quelle est la tâche demandée par Vincent** ? (Sprint 2 entier ? Fix ciblé ? Question stratégique ?)
-3. **Est-ce dans la zone safe ?** `palladio_engine.py` et workflow `XFOhmez4MtTnmtnL` → oui. `main.py`, workflows `fNY7LUzIeBHutwcT` / `gdawiNp1oMoYcwAL` → **non, demande confirmation explicite**.
+3. **Zone de travail** : tout le code API est à toi (`main.py`, `palladio_api.py`, `palladio_engine.py`, `palladio_render.py`, `palladio_scrap/`) + le workflow `XFOhmez4MtTnmtnL`. Le legacy a été retiré (§0). Reste prudent sur la prod (tester avant de publier), mais il n'y a plus de « zone interdite ».
 4. **Y a-t-il déjà un briefing dédié à la tâche ?** Cherche dans le projet Vincent (`/mnt/project/` si Claude.ai, ou les fichiers `.md` du repo). `TERRAVALU_SPRINT2_BRIEFING.md` est ton point de départ Sprint 2.
 5. **Quel est ton plan ?** Formule-le en interne en 3 étapes max. Si tu hésites, demande à Vincent en *une* question concise.
 6. **Implémente surgicalement.** Une fonction, un test visuel, commit.

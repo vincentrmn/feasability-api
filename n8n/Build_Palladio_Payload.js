@@ -1,3 +1,7 @@
+// node "Build Palladio Payload" du workflow Palladio (n8n XFOhmez4MtTnmtnL).
+// Source de vérité — synchroniser ici à chaque modif du node (cf. README).
+// Mappe les règles Airtable -> payload envoyé à POST /palladio/calcul/full/html,
+// incluant la méthode de recul avant typée (Palladio Scrap) et le contexte d'affichage.
 function extractAirtable(v) {
   if (v === null || v === undefined) return null;
   if (typeof v === 'object' && !Array.isArray(v) && v.name !== undefined) return v.name;
@@ -36,7 +40,6 @@ if (reculLateral === null || reculArriere === null) {
   throw new Error('Reculs lateral ou arriere manquants dans Airtable pour ' + zoneInfo.code_zone);
 }
 
-// Niveaux hors-sol : "3 + combles/retrait" -> {niveaux:3, combles:true}
 function parseNiveaux(v) {
   const s = String(extractAirtable(v) || '').toLowerCase();
   const combles = /comble|retrait/.test(s);
@@ -45,7 +48,6 @@ function parseNiveaux(v) {
 }
 const niv = parseNiveaux(rules.Niveaux_hors_sol_max);
 
-// Regles PAG mappees pour la couche metier Sprint 2 (/palladio/calcul/full)
 const zone_pag = {
   code_zone: zoneInfo.code_zone,
   nom_zone: extractAirtable(rules.Nom_zone),
@@ -70,20 +72,34 @@ const payload = {
   recul_arriere_m: reculArriere,
   profondeur_max_m: profMax,
   zone_pag: zone_pag,
+  adresse: geo.adresse || geo.address || '',
+  contexte: {
+    adresse: geo.adresse || '',
+    parcel_label: geo.parcel_label || '',
+    code_zone: zoneInfo.code_zone,
+    nom_zone: extractAirtable(rules.Nom_zone),
+    regles: {
+      COS_max: toFloat(rules.COS_max),
+      CSS_max: toFloat(rules.CSS_max),
+      Hauteur_corniche_max_m: toFloat(rules.Hauteur_corniche_max_m),
+      Hauteur_faite_max_m: toFloat(rules.Hauteur_faite_max_m),
+      DL_max_log_ha: toFloat(rules.DL_max_log_ha),
+    },
+  },
 };
 
-return [{ json: {
-  _palladio_payload: payload,
-  _palladio_resume: {
-    parcelle_id: geo.parcel_key,
-    reculs_appliques: {
-      avant_cible_m: reculAvantCible,
-      avant_min_pag: reculAvantMin,
-      avant_max_pag: reculAvantMax,
-      lateral_m: reculLateral,
-      arriere_m: reculArriere,
-      profondeur_max_m: profMax,
-    },
-    parcel_nb_sommets: parcelGeom.coordinates[0].length - 1,
-  },
-}}];
+// Recul avant adaptatif : injecté seulement si non-fixe (alignement_voisins / lie_hauteur).
+// 'fixe' -> rien -> comportement scalaire historique (zéro régression).
+const methodeAvant = extractAirtable(rules.Methode_recul_avant);
+if (methodeAvant && methodeAvant !== 'fixe') {
+  const mAv = { type: methodeAvant, source_article: extractAirtable(rules.Article_PAP_QE) };
+  if (methodeAvant === 'alignement_voisins') { mAv.fallback_m = toFloat(rules.Recul_avant_fallback_m); }
+  else if (methodeAvant === 'lie_hauteur') { mAv.coef_hauteur = 0.5; mAv.plancher_m = toFloat(rules.Recul_avant_fallback_m); }
+  payload.recul_avant_methode = mAv;
+  const fbAv = mAv.fallback_m || mAv.plancher_m;
+  if (fbAv && (!reculAvantCible || reculAvantCible <= 0)) payload.recul_avant_m = fbAv;
+  const cornicheAv = toFloat(rules.Hauteur_corniche_max_m);
+  if (cornicheAv !== null) payload.corniche_effective_m = cornicheAv;
+}
+
+return [{ json: { _palladio_payload: payload } }];
