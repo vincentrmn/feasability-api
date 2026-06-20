@@ -13,6 +13,7 @@ from typing import Optional, Dict, List, Any
 from palladio_engine import calculer_emprise_palladio, calculer_palladio_full, PalladioError
 from palladio_render import render_palladio_html
 from cockpit_render import compute_communes_status, render_landing_html
+from airtable_landing import fetch_landing_data
 
 router = APIRouter()
 
@@ -126,28 +127,17 @@ def calcul_palladio_full_html(req: PalladioFullRequest):
     return HTMLResponse(content=render_palladio_html(resp, req.adresse or "", req.contexte))
 
 
-class LandingRequest(BaseModel):
-    """Input pour la page d'accueil (formulaire + cockpit de couverture).
-
-    n8n fournit le contenu des tables Airtable (il a la credential) ; le calcul
-    de couverture et le rendu vivent ici (versionnes/testes). Toutes les tables
-    sont optionnelles : une table absente -> couverture "—", jamais d'erreur.
-    """
-
-    zones: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records Zones_PAG")
-    stationnement: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records Regles_Stationnement")
-    velo: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records Regles_Stationnement_Velo")
-    servitudes: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records Servitudes")
-    pap_nq: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records PAP_NQ_Coefficients")
-    communes: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records Communes (meta)")
-
-
-@router.post("/palladio/landing/html", response_class=HTMLResponse)
-def palladio_landing_html(req: LandingRequest):
+@router.get("/palladio/landing/html", response_class=HTMLResponse)
+def palladio_landing_html():
     """Page d'accueil = formulaire d'adresse + cockpit de couverture des communes.
-    Servie sur l'interface principale (webhook n8n /webhook/palladio)."""
+    Servie sur l'interface principale (webhook n8n /webhook/palladio).
+
+    Les donnees de couverture sont lues cote serveur depuis Airtable, en cache
+    (airtable_landing) : un seul refetch toutes les 5 min, pas d'appel Airtable
+    par visite. Si la cle Airtable manque -> formulaire seul, sans erreur."""
+    d = fetch_landing_data()
     status = compute_communes_status(
-        zones=req.zones, stationnement=req.stationnement, velo=req.velo,
-        servitudes=req.servitudes, pap_nq=req.pap_nq, communes_meta=req.communes,
+        zones=d["zones"], stationnement=d["stationnement"], velo=d["velo"],
+        servitudes=d["servitudes"], pap_nq=d["pap_nq"], communes_meta=d["communes"],
     )
     return HTMLResponse(content=render_landing_html(status))
