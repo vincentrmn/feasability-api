@@ -20,9 +20,18 @@ renvoie les champs par nom ; on normalise les deux formes par securite. Tout est
 optionnel : une table absente => couverture "—", jamais d'erreur.
 """
 from typing import Dict, Any, List, Optional
+from urllib.parse import quote
 import html as _h
 
 CALCUL_URL = "https://n8n-production-8929d.up.railway.app/webhook/palladio/calcul"
+
+# Propositions d'adresses (tests rapides), comme l'ancien formulaire.
+SHORTCUTS = [
+    "5 rue des Tilleuls, Strassen",
+    "7 rue des Tilleuls, Strassen",
+    "11 rue des Tilleuls, Strassen",
+    "5 rue de Mamer, Bertrange",
+]
 
 # Nombre total de communes au Luxembourg (depuis les fusions de 2024). Sert au
 # compteur "couvertes / total". A ajuster si une nouvelle fusion intervient.
@@ -159,6 +168,15 @@ _STATUT_LABEL = {
 }
 
 
+def _shortcuts_html(calcul_url: str) -> str:
+    if not SHORTCUTS:
+        return ""
+    chips = "".join(
+        f'<a class="chip" href="{_esc(calcul_url)}?address={quote(a)}">{_esc(a)}</a>'
+        for a in SHORTCUTS)
+    return f'<div class="shortcuts"><span class="sc-label">Tests rapides</span>{chips}</div>'
+
+
 def _badge(ok: bool) -> str:
     if ok:
         return '<span class="cov cov-ok" title="Pris en charge">✓</span>'
@@ -221,8 +239,7 @@ def render_landing_html(
         '<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
         f'<style>{_styles()}</style></head><body>'
-        '<div class="topbar"><div class="brand">Palladio</div>'
-        '<div class="tag">moteur · interne</div></div>'
+        '<div class="topbar"><div class="brand">Palladio</div></div>'
         '<main>'
         # --- formulaire (outil interne, pas de marketing) ---
         '<section class="hero">'
@@ -231,6 +248,7 @@ def render_landing_html(
         f'<input id="addr" type="text" name="address" placeholder="{_esc(placeholder)}" autocomplete="off" required>'
         '<button type="submit">Analyser</button>'
         '</form>'
+        f'{_shortcuts_html(calcul_url)}'
         '</section>'
         # --- cockpit ---
         '<section class="cockpit">'
@@ -264,7 +282,6 @@ def _styles() -> str:
         "body{margin:0;font-size:15px;line-height:1.55;color:var(--ink);background:#fff;-webkit-font-smoothing:antialiased}"
         ".topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}"
         ".brand{font-weight:700;letter-spacing:-.01em}"
-        ".tag{font-size:12px;color:var(--muted)}"
         "main{max-width:880px;margin:0 auto;padding:0 20px}"
         ".hero{padding:28px 0 24px;border-bottom:1px solid var(--line)}"
         ".search-label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px}"
@@ -273,6 +290,10 @@ def _styles() -> str:
         ".search input:focus{border-color:var(--ink);box-shadow:0 0 0 3px rgba(17,17,17,.08)}"
         ".search button{font-size:15px;font-weight:600;color:#fff;background:var(--ink);border:0;border-radius:11px;padding:13px 22px;cursor:pointer}"
         ".search button:hover{background:#000}"
+        ".shortcuts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}"
+        ".sc-label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-right:2px}"
+        ".chip{font-size:13px;color:var(--ink);text-decoration:none;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:6px 12px}"
+        ".chip:hover{background:var(--ink);color:#fff;border-color:var(--ink)}"
         ".cockpit{padding:26px 0 10px}"
         ".cock-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}"
         ".cock-head h2{font-size:18px;font-weight:600;margin:0}"
