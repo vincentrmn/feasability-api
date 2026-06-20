@@ -24,6 +24,10 @@ import html as _h
 
 CALCUL_URL = "https://n8n-production-8929d.up.railway.app/webhook/palladio/calcul"
 
+# Nombre total de communes au Luxembourg (depuis les fusions de 2024). Sert au
+# compteur "couvertes / total". A ajuster si une nouvelle fusion intervient.
+TOTAL_COMMUNES_LU = 100
+
 
 # ---------------- helpers ----------------
 
@@ -163,7 +167,9 @@ def _badge(ok: bool) -> str:
 
 def _commune_row(s: Dict[str, Any]) -> str:
     cov = s["coverage"]
-    cells = "".join(f'<td class="cov-cell">{_badge(cov[k])}</td>' for k, _, _ in _LAYERS)
+    cells = "".join(
+        f'<td class="cov-cell" data-label="{_esc(short)}">{_badge(cov[k])}</td>'
+        for k, short, _ in _LAYERS)
     label, color = _STATUT_LABEL.get(s["statut"], (s["statut"], "var(--muted)"))
     conf_bits = []
     if s["n_valide"]:
@@ -177,8 +183,8 @@ def _commune_row(s: Dict[str, Any]) -> str:
         f'<td class="c-name"><span class="c-dot" style="background:{color}"></span>{_esc(s["commune"])}'
         f'<div class="c-sub">{s["n_zones"]} zone(s) · recul avant : {_esc(methodes)}</div></td>'
         f'{cells}'
-        f'<td class="c-conf">{_esc(conf)}</td>'
-        f'<td class="c-statut"><span class="pill" style="--pc:{color}">{_esc(label)}</span></td>'
+        f'<td class="c-conf" data-label="Confiance">{_esc(conf)}</td>'
+        f'<td class="c-statut" data-label="Statut"><span class="pill" style="--pc:{color}">{_esc(label)}</span></td>'
         '</tr>'
     )
 
@@ -215,27 +221,22 @@ def render_landing_html(
         '<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
         f'<style>{_styles()}</style></head><body>'
-        '<div class="topbar"><div class="brand">Palladio <span class="by">par Terravalu</span></div>'
-        '<div class="tag">Étude de faisabilité — Luxembourg</div></div>'
+        '<div class="topbar"><div class="brand">Palladio</div>'
+        '<div class="tag">moteur · interne</div></div>'
         '<main>'
-        # --- hero + formulaire ---
+        # --- formulaire (outil interne, pas de marketing) ---
         '<section class="hero">'
-        '<h1>Que peut-on construire sur une parcelle ?</h1>'
-        '<p class="lead">Entrez une adresse au Luxembourg. Palladio identifie la parcelle '
-        'cadastrale, applique les règles d\'urbanisme de la commune et calcule '
-        'l\'enveloppe constructible, la surface, les logements et le stationnement.</p>'
+        '<label class="search-label" for="addr">Adresse au Luxembourg</label>'
         f'<form class="search" action="{_esc(calcul_url)}" method="get">'
-        f'<input type="text" name="address" placeholder="{_esc(placeholder)}" autocomplete="off" required>'
+        f'<input id="addr" type="text" name="address" placeholder="{_esc(placeholder)}" autocomplete="off" required>'
         '<button type="submit">Analyser</button>'
         '</form>'
-        '<p class="hint">Communes couvertes ci-dessous. Pour les autres, l\'analyse '
-        'reste indicative en attendant l\'intégration du règlement.</p>'
         '</section>'
         # --- cockpit ---
         '<section class="cockpit">'
         '<div class="cock-head"><h2>Couverture réglementaire</h2>'
         '<div class="kpis">'
-        f'<div class="kpi"><div class="kn">{n_communes}</div><div class="kl">communes</div></div>'
+        f'<div class="kpi"><div class="kn">{n_communes}<span class="kn-tot"> / {TOTAL_COMMUNES_LU}</span></div><div class="kl">communes couvertes</div></div>'
         f'<div class="kpi"><div class="kn">{n_zones}</div><div class="kl">zones PAG</div></div>'
         f'<div class="kpi"><div class="kn">{n_valide_communes}</div><div class="kl">validées</div></div>'
         '</div></div>'
@@ -259,33 +260,32 @@ def render_landing_html(
 def _styles() -> str:
     return (
         ":root{--ink:#111;--muted:#777;--line:#e6e6e6;--soft:#f7f7f5;--amber:#e08a2e;--blue:#2962ff;--green:#2a7;--red:#c00}"
-        "*{box-sizing:border-box}"
-        "body{margin:0;font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.55;color:var(--ink);background:#fff;-webkit-font-smoothing:antialiased}"
+        "*{box-sizing:border-box;font-family:'Inter',sans-serif}"
+        "body{margin:0;font-size:15px;line-height:1.55;color:var(--ink);background:#fff;-webkit-font-smoothing:antialiased}"
         ".topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}"
-        ".brand{font-weight:700;letter-spacing:-.01em}.brand .by{font-weight:400;color:var(--muted);font-size:12px;margin-left:4px}"
+        ".brand{font-weight:700;letter-spacing:-.01em}"
         ".tag{font-size:12px;color:var(--muted)}"
         "main{max-width:880px;margin:0 auto;padding:0 20px}"
-        ".hero{padding:42px 0 30px;border-bottom:1px solid var(--line)}"
-        ".hero h1{font-size:30px;font-weight:700;letter-spacing:-.02em;margin:0 0 12px}"
-        ".lead{color:#333;font-size:16px;max-width:620px;margin:0 0 22px}"
+        ".hero{padding:28px 0 24px;border-bottom:1px solid var(--line)}"
+        ".search-label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px}"
         ".search{display:flex;gap:10px;max-width:620px}"
-        ".search input{flex:1;font:inherit;padding:13px 15px;border:1px solid #ccc;border-radius:11px;outline:none}"
+        ".search input{flex:1;font-size:15px;padding:13px 15px;border:1px solid #ccc;border-radius:11px;outline:none}"
         ".search input:focus{border-color:var(--ink);box-shadow:0 0 0 3px rgba(17,17,17,.08)}"
-        ".search button{font:inherit;font-weight:600;color:#fff;background:var(--ink);border:0;border-radius:11px;padding:13px 22px;cursor:pointer}"
+        ".search button{font-size:15px;font-weight:600;color:#fff;background:var(--ink);border:0;border-radius:11px;padding:13px 22px;cursor:pointer}"
         ".search button:hover{background:#000}"
-        ".hint{font-size:13px;color:var(--muted);margin:12px 0 0}"
-        ".cockpit{padding:30px 0 10px}"
+        ".cockpit{padding:26px 0 10px}"
         ".cock-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}"
         ".cock-head h2{font-size:18px;font-weight:600;margin:0}"
-        ".kpis{display:flex;gap:10px}"
+        ".kpis{display:flex;gap:10px;flex-wrap:wrap}"
         ".kpi{background:var(--soft);border-radius:11px;padding:10px 16px;text-align:center;min-width:78px}"
-        ".kpi .kn{font-size:22px;font-weight:700;line-height:1.1}.kpi .kl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}"
+        ".kpi .kn{font-size:22px;font-weight:700;line-height:1.1}.kpi .kn-tot{font-size:15px;font-weight:600;color:var(--muted)}"
+        ".kpi .kl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}"
         ".table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px}"
-        "table.cock{border-collapse:collapse;width:100%;min-width:680px;font-size:14px}"
+        "table.cock{border-collapse:collapse;width:100%;font-size:14px}"
         "table.cock th,table.cock td{padding:11px 12px;text-align:center;border-bottom:1px solid #f0f0f0}"
         "table.cock thead th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600;background:#fafafa}"
         "table.cock tbody tr:last-child td{border-bottom:0}"
-        ".c-name{text-align:left!important;font-weight:600;min-width:180px}"
+        ".c-name{text-align:left!important;font-weight:600;min-width:170px}"
         ".c-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:middle}"
         ".c-sub{font-weight:400;font-size:12px;color:var(--muted);margin-top:2px}"
         ".cov{display:inline-block;font-weight:700;font-size:14px}.cov-ok{color:var(--green)}.cov-no{color:#ccc}"
@@ -295,5 +295,15 @@ def _styles() -> str:
         ".legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12px;color:var(--muted);margin:14px 2px 0}"
         ".legend span{display:inline-flex;align-items:center;gap:6px}"
         ".note{font-size:12px;color:var(--muted);line-height:1.5;margin:18px 0 0}"
-        "footer{max-width:880px;margin:40px auto 0;padding:18px 20px 32px;border-top:1px solid var(--line);color:#999;font-size:12px;font-family:ui-monospace,'SF Mono',Menlo,monospace}"
+        "footer{max-width:880px;margin:40px auto 0;padding:18px 20px 32px;border-top:1px solid var(--line);color:#999;font-size:12px}"
+        # --- responsive : sur mobile, chaque ligne devient une carte (pas de scroll horizontal) ---
+        "@media(max-width:640px){"
+        ".table-wrap{overflow-x:visible;border:0;border-radius:0}"
+        "table.cock thead{display:none}"
+        "table.cock,table.cock tbody,table.cock tr,table.cock td{display:block;width:100%}"
+        "table.cock tr{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:12px}"
+        "table.cock td{border:0;padding:6px 0;text-align:right;display:flex;align-items:center;justify-content:space-between;gap:12px}"
+        "table.cock td.c-name{text-align:left;display:block;font-size:16px;padding:0 0 8px;margin-bottom:6px;border-bottom:1px solid #f0f0f0}"
+        "table.cock td[data-label]::before{content:attr(data-label);color:var(--muted);font-size:13px;font-weight:500;text-align:left}"
+        "}"
     )
