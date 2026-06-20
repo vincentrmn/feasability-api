@@ -12,6 +12,7 @@ from typing import Optional, Dict, List, Any
 
 from palladio_engine import calculer_emprise_palladio, calculer_palladio_full, PalladioError
 from palladio_render import render_palladio_html
+from cockpit_render import compute_communes_status, render_landing_html
 
 router = APIRouter()
 
@@ -123,3 +124,30 @@ def calcul_palladio_full_html(req: PalladioFullRequest):
     """Idem /full mais renvoie la page HTML (renderer palladio_render)."""
     resp = _full(req)
     return HTMLResponse(content=render_palladio_html(resp, req.adresse or "", req.contexte))
+
+
+class LandingRequest(BaseModel):
+    """Input pour la page d'accueil (formulaire + cockpit de couverture).
+
+    n8n fournit le contenu des tables Airtable (il a la credential) ; le calcul
+    de couverture et le rendu vivent ici (versionnes/testes). Toutes les tables
+    sont optionnelles : une table absente -> couverture "—", jamais d'erreur.
+    """
+
+    zones: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records Zones_PAG")
+    stationnement: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records Regles_Stationnement")
+    velo: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records Regles_Stationnement_Velo")
+    servitudes: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records Servitudes")
+    pap_nq: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records PAP_NQ_Coefficients")
+    communes: Optional[List[Dict[str, Any]]] = Field(default=None, description="Records Communes (meta)")
+
+
+@router.post("/palladio/landing/html", response_class=HTMLResponse)
+def palladio_landing_html(req: LandingRequest):
+    """Page d'accueil = formulaire d'adresse + cockpit de couverture des communes.
+    Servie sur l'interface principale (webhook n8n /webhook/palladio)."""
+    status = compute_communes_status(
+        zones=req.zones, stationnement=req.stationnement, velo=req.velo,
+        servitudes=req.servitudes, pap_nq=req.pap_nq, communes_meta=req.communes,
+    )
+    return HTMLResponse(content=render_landing_html(status))
