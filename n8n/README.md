@@ -43,3 +43,33 @@ test sur une parcelle réelle (désactiver temporairement `Webhook Form` pour ci
 > Limite outil : `execute_workflow` ne pilote pas un webhook en `responseNode`
 > (il attend un vrai appel HTTP) — la branche page d'accueil se teste en ouvrant
 > l'URL `/webhook/palladio` dans le navigateur.
+
+---
+
+# Workflow « Palladio Scrap — Onboarding commune » (n8n `kBeouxMu3m3g1djr`)
+
+Pipeline d'industrialisation des règles (roadmap point 7). Ajoute/met à jour une
+commune dans Airtable à partir de ses règlements en ligne.
+
+`Manual Trigger → Input (commune, pag_url, pap_url) → Download PAG → PDF vers texte
+→ Download PAP → PDF vers texte PAP → Build doc (concatène PAG + PAP QE)
+→ Extraction Claude (nœud LLM, prompt = palladio_scrap/prompts/onboarding_airtable.md)
+→ Parse rows (normalise booléens Oui/Non, nombres→texte pour les singleSelect)
+→ Write Airtable (upsert sur Commune + Code_zone, Confiance=auto, typecast)`
+
+## Onboarder une commune
+1. Trouver les URLs PDF du **PAG partie écrite** et du **PAP QE partie écrite**
+   (site communal ou data.public.lu).
+2. Ouvrir le node **Input**, renseigner `commune`, `pag_url`, `pap_url`.
+3. Exécuter (manuel). Les zones constructibles sont créées/mises à jour en
+   `Confiance=auto`, puis relues par un humain (passage à `valide`).
+4. La commune apparaît automatiquement dans le cockpit de la page d'accueil
+   (qui lit Airtable).
+
+## Notes
+- **PAG seul = affectation + articles, pas les dimensions** : reculs/hauteurs/COS
+  sont dans le PAP QE. Toujours fournir les deux.
+- Modèle : Claude Sonnet (gros contexte). Credential n8n `Anthropic account`.
+- Credential Airtable en **écriture** requis (`data.records:write` sur la base).
+- `upsert` (clé Commune+Code_zone) → un re-run ne crée pas de doublons.
+- Validé le 2026-06-20 sur **Leudelange** (5 zones : HAB-1/HAB-2/MIX-v/MIX-r/BEP-1).
