@@ -839,15 +839,22 @@ def alignment_band_ra(p1: List[float], p2: List[float],
                       centroid: Tuple[float, float],
                       fallback_m: float) -> Tuple[float, Dict[str, Any]]:
     """
-    Recul avant deduit de la bande d'alignement des batiments voisins.
+    Recul avant deduit de la bande d'alignement des batiments voisins ADJACENTS.
 
-    Pour chaque batiment voisin, on mesure la distance perpendiculaire de sa facade
-    la plus proche a la LIGNE de l'arete voirie (p1,p2), cote parcelle. Le recul
-    d'alignement = moyenne de ces distances de facade. Aucun voisin exploitable
-    -> fallback_m.
+    On ne retient que les batiments reellement en vis-a-vis de la facade sur rue :
+      - cote parcelle (distance perpendiculaire > 0.3 m a la ligne de voirie),
+      - lateralement proches de la frontage (projection sur l'axe de voirie dans
+        [-W, L+W]) -> exclut les batiments d'en face / plus loin dans la rue,
+      - a une distance plausible d'un recul avant (<= ALIGN_DIST_CAP_M) -> exclut
+        les batiments de fond de parcelle traversante.
+    Recul = MEDIANE des facades retenues (robuste aux aberrants, contrairement a la
+    moyenne qui se faisait tirer par des batiments lointains). Aucun voisin retenu
+    -> fallback chiffre.
 
     Pur geometrique (LUREF), testable hors reseau.
     """
+    ALIGN_DIST_CAP_M = 15.0       # un recul avant reel ne depasse pas ~15 m
+    ALIGN_LATERAL_WINDOW_M = 12.0  # tolerance laterale autour de la frontage
     info: Dict[str, Any] = {"methode": "alignement_voisins", "n_voisins_utiles": 0,
                             "fronts_m": [], "fallback_m": fallback_m, "fallback_used": False}
     n = _edge_inward_unit_normal(p1, p2, centroid)
@@ -856,22 +863,37 @@ def alignment_band_ra(p1: List[float], p2: List[float],
         info["raison"] = "arete degeneree"
         return fallback_m, info
     nx, ny = n
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    L = math.hypot(dx, dy)
+    ux, uy = (dx / L, dy / L) if L > 1e-9 else (0.0, 0.0)
+
     fronts: List[float] = []
     for poly in neighbor_polys_luref or []:
         if poly is None or poly.is_empty:
             continue
-        ds = [ (vx - p1[0]) * nx + (vy - p1[1]) * ny
-               for (vx, vy) in poly.exterior.coords ]
-        pos = [d for d in ds if d > 0.05]   # cote parcelle uniquement
+        coords = list(poly.exterior.coords)
+        perp = [(vx - p1[0]) * nx + (vy - p1[1]) * ny for (vx, vy) in coords]
+        proj = [(vx - p1[0]) * ux + (vy - p1[1]) * uy for (vx, vy) in coords]
+        # lateralement en face de la frontage ?
+        if max(proj) < -ALIGN_LATERAL_WINDOW_M or min(proj) > L + ALIGN_LATERAL_WINDOW_M:
+            continue
+        pos = [d for d in perp if d > 0.3]   # cote parcelle
         if not pos:
             continue
-        fronts.append(min(pos))             # facade la plus proche de la rue
+        front = min(pos)                     # facade la plus proche de la rue
+        if front > ALIGN_DIST_CAP_M:         # trop loin pour etre un recul avant
+            continue
+        fronts.append(front)
+
     if not fronts:
         info["fallback_used"] = True
         return fallback_m, info
-    ra = sum(fronts) / len(fronts)
-    info["n_voisins_utiles"] = len(fronts)
-    info["fronts_m"] = [round(f, 2) for f in fronts]
+    s = sorted(fronts)
+    m = len(s)
+    ra = s[m // 2] if m % 2 else (s[m // 2 - 1] + s[m // 2]) / 2.0
+    info["n_voisins_utiles"] = m
+    info["fronts_m"] = [round(f, 2) for f in s]
+    info["recul_median_m"] = round(ra, 2)
     return ra, info
 
 
@@ -1194,7 +1216,7 @@ def calculer_emprise_palladio(
     return {
         "meta": {
             "engine": "palladio",
-            "version": "0.3",
+            "version": "0.3.1",
             "method": "shapely_buffer_halfplanes_v5_cadastral_voirie_merged_faces",
         },
         "parcelle": {
@@ -1829,7 +1851,7 @@ def calculer_palladio_full(
             parcelle_nb_sommets=nb_sommets, type_construction={"type": "indetermine"},
             zone_pag=zone_pag, enveloppe_vide=True)
         return {
-            "meta": {"engine": "palladio", "version": "0.3", "method": "full",
+            "meta": {"engine": "palladio", "version": "0.3.1", "method": "full",
                      "enveloppe_vide": True, "error": base_error},
             "parcelle": {"nb_sommets": nb_sommets, "id": parcelle_id},
             "scb": None, "logements": None, "parkings": None,
@@ -1929,8 +1951,28 @@ def calculer_palladio_full(
             idx_voirie = base["voirie"]["idx"]
             idx_fond = base["fond"]["idx"]
         except PalladioError as ex:
-            # On garde l'enveloppe pass-1 si le recalcul degenere (jamais pire)
-            print(f"[palladio bati] WARN recalcul (party-wall/recul avant) a echoue, garde pass-1 : {ex}")
+            print(f"[palladio bati] WARN recalcul (recul avant {recul_avant_effectif}) a echoue : {ex}")
+            # Retry avec le recul avant scalaire/fallback MAIS en gardant les murs
+            # mitoyens : ne jamais perdre la mitoyennete a cause d'un recul avant
+            # adaptatif degenere (sinon des reculs lateraux reapparaissent a tort).
+            if party_wall_idxs:
+                try:
+                    base = calculer_emprise_palladio(
+                        parcel_geometry_wgs84=parcel_geometry_wgs84,
+                        point_geocode_wgs84=point_geocode_wgs84,
+                        recul_avant_m=recul_avant_m,
+                        recul_lateral_m=recul_lateral_m,
+                        recul_arriere_m=recul_arriere_m,
+                        profondeur_max_m=profondeur_max_m,
+                        parcelle_id=parcelle_id,
+                        party_wall_idxs=party_wall_idxs,
+                    )
+                    idx_voirie = base["voirie"]["idx"]
+                    idx_fond = base["fond"]["idx"]
+                    recul_avant_just = {"type": "fixe", "recul_m": recul_avant_m,
+                                        "source": "retry_scalaire_apres_degenerescence"}
+                except PalladioError as ex2:
+                    print(f"[palladio bati] WARN retry party-wall a echoue, garde pass-1 : {ex2}")
     base["recul_avant_adaptatif"] = recul_avant_just
 
     # ---- 4. Plafond COS sur l'emprise au sol ----
@@ -1997,7 +2039,7 @@ def calculer_palladio_full(
     return {
         "meta": {
             "engine": "palladio",
-            "version": "0.3",
+            "version": "0.3.1",
             "method": "full",
             "enveloppe_vide": False,
             "hab1_corrige": corriger_hab1,
