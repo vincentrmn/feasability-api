@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from palladio_engine import calculer_palladio_full
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MAIN = os.path.join(ROOT, "main.py")
+MAIN = os.path.join(ROOT, "palladio_api.py")  # les routes Palladio vivent ici (refactor point 12)
 
 # Parametres toujours fournis par le modele de base (geometrie/reculs) — verifies
 # implicitement, on se concentre sur ceux qui ont deja casse.
