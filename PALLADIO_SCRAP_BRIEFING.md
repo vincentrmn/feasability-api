@@ -251,4 +251,15 @@ B2C sans relecture.
 
 ---
 
+## 11. Avancement roadmap (2026-06-20)
+
+- **7. Mamer HAB-2** — ✅ complété (latéral 3 / arrière 10 / fallback 4 / bande 20 / sous-sol 20), Airtable + JSON. Plus de plantage n8n possible.
+- **8. Renderer HTML dans le repo** — ✅ backend : `palladio_render.py` + endpoint `POST /palladio/calcul/full/html` (lit le recul sur la réponse moteur → corrige l'affichage 5.34 vs 4). Tests `palladio_scrap/test_render.py` 3/3. **Reste** : bascule du node n8n Assemble (39 Ko) vers cet endpoint — *gardé jusqu'à validation visuelle Vincent* (échantillon envoyé).
+- **9. Redesign schémas** — 🟡 v1 envoyée en échantillon HTML, à itérer selon retour Vincent.
+- **10/11. Contrat d'entrée + test** — ✅ `palladio_scrap/test_contract.py` : vérifie que les 11 params moteur sont tous câblés dans `main.py` (anti-régression du bug param-non-transmis).
+- **12. Sortir l'API Palladio de `main.py`** — ⏸️ non fait seul (refactor sur l'app live + fichier Jules). À faire avec soin/accord.
+- **13. Retirer legacy OBB v2.3** — ⏸️ nécessite Jules + période d'observation (audit des appelants des routes `/calcul` et `/v2/calcul` à faire avant).
+
+---
+
 *Fin du briefing.*
