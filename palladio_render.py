@@ -22,6 +22,42 @@ import html as _h
 
 FORM_URL = "https://n8n-production-8929d.up.railway.app/webhook/palladio"
 
+# Passe de de-collision des labels (cote navigateur) : mesure les vraies boites
+# (getBBox) et ecarte verticalement les <text> qui se chevauchent, en restant dans
+# le viewBox. Garantit qu'aucun nombre ne se superpose, sur tous les schemas.
+_DECLUTTER_JS = """<script>
+(function(){
+ function dc(svg){
+  var vb=svg.viewBox.baseVal, T=[].slice.call(svg.querySelectorAll('text'));
+  if(T.length<2) return;
+  var B=T.map(function(t){var k;try{k=t.getBBox();}catch(e){return null;}
+    return {t:t,x:k.x,y:k.y,w:k.width,h:k.height,dy:0};}).filter(Boolean);
+  var pad=0.5;
+  function ov(a,b){var ay=a.y+a.dy,by=b.y+b.dy;
+    return (Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x))>-pad
+        && (Math.min(ay+a.h,by+b.h)-Math.max(ay,by))>-pad;}
+  for(var it=0;it<120;it++){var moved=false;
+   for(var i=0;i<B.length;i++)for(var j=i+1;j<B.length;j++){
+     var a=B[i],b=B[j]; if(!ov(a,b))continue;
+     var ay=a.y+a.dy,by=b.y+b.dy;
+     var oy=Math.min(ay+a.h,by+b.h)-Math.max(ay,by);
+     var p=(oy+pad)/2+0.05;
+     if(ay+a.h/2<=by+b.h/2){a.dy-=p;b.dy+=p;}else{a.dy+=p;b.dy-=p;}
+     moved=true;}
+   if(!moved)break;}
+  B.forEach(function(o){
+    var y=o.y+o.dy;
+    if(y<vb.y+0.3)o.dy=vb.y+0.3-o.y;
+    if(y+o.h>vb.y+vb.height-0.3)o.dy=vb.y+vb.height-0.3-o.h-o.y;
+    if(o.dy)o.t.setAttribute('transform','translate(0,'+o.dy.toFixed(2)+')');});
+ }
+ function run(){var s=document.querySelectorAll('svg.schema-svg');
+   for(var i=0;i<s.length;i++){try{dc(s[i]);}catch(e){}}}
+ if(document.readyState!=='loading')run();
+ else document.addEventListener('DOMContentLoaded',run);
+})();
+</script>"""
+
 
 # ---------------- helpers ----------------
 
@@ -543,7 +579,8 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             f'<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
             f'<style>{_styles()}</style></head><body>{topbar}<div class="wrap">{hero}{s}'
             f'<a class="btn-home btn-home-bottom" href="{FORM_URL}">← Nouvelle recherche</a>'
-            f'<footer class="footer"><span>Palladio engine {_esc(meta.get("version"))}</span></footer></div></body></html>')
+            f'<footer class="footer"><span>Palladio engine {_esc(meta.get("version"))}</span></footer></div>'
+            f'{_DECLUTTER_JS}</body></html>')
 
 
 def _error_page(adresse, msg):
