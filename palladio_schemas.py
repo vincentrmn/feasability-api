@@ -113,6 +113,23 @@ def fig_parcelle(P, pt=None) -> str:
     return _img(fig)
 
 
+def fig_overview(P, E, pt=None, idxV=None) -> str:
+    """Plan d'ensemble épuré : parcelle + zone constructible (emprise) + façade rue.
+    Pas de lettres de sommets : lisible même sur parcelle en lanière/drapeau."""
+    fig, ax = _new(6.0, 4.4)
+    _draw_parcel(ax, P, fc="#f4f4f2", ec="#999", lw=1.2)
+    if E:
+        ax.add_patch(MplPoly(E, closed=True, facecolor=INK, edgecolor="#000",
+                             lw=1.0, alpha=0.85, zorder=3))
+    if idxV is not None:
+        a, b = _edge(P, idxV)
+        ax.plot([a[0], b[0]], [a[1], b[1]], color=RED, lw=4, zorder=4, solid_capstyle="round")
+    if pt:
+        ax.plot([pt[0]], [pt[1]], "o", ms=7, color=BLUE, zorder=9)
+    _fit(ax, P, [pt] if pt else None)
+    return _img(fig)
+
+
 def fig_voirie(P, pt, idxV, edges_classified=None) -> str:
     fig, ax = _new()
     _draw_parcel(ax, P, fc="#fafafa", ec="#bbb", lw=1.0)

@@ -228,10 +228,11 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     vdots = "".join(f'<circle cx="{px(p[0])}" cy="{py(p[1])}" r="0.9" class="dot-vertex"/>' for p in P)
     ptgeo = f'<circle cx="{px(pt[0])}" cy="{py(pt[1])}" r="1.4" class="dot-geocode"/>'
 
-    # --- schema 1 : parcelle ---
-    schParcelle = (ps.fig_parcelle(P, pt)
-                   + f'<div class="schema-caption">Polygone cadastral (LUREF), {n} sommets. Surface '
-                   f'<strong>{_n(_poly_area(P))} m²</strong>. Le point bleu est l\'adresse géocodée.</div>')
+    # --- schema 1 : plan d'ensemble (parcelle + zone constructible + rue) ---
+    schParcelle = (ps.fig_overview(P, E, pt, idxV)
+                   + f'<div class="schema-caption">Plan : la parcelle (<strong>{_n(_poly_area(P))} m²</strong>, '
+                   f'{n} sommets), la <strong>zone constructible</strong> en noir, la façade sur rue en rouge, '
+                   f'le point bleu = l\'adresse.</div>')
 
     # --- schema 3a : voirie ---
     ddw = dist_pt_seg(pt, P[idxV], P[(idxV + 1) % n])
@@ -243,10 +244,8 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
         tot = sum(e.get("length_m", 0) for e in ecs if e.get("is_voirie"))
         cad_cap = (f' Les arêtes en ambre touchent le domaine public : <strong>{nbv}</strong> sur '
                    f'{len(ecs)} ({_n(tot)} m de façade rue).')
-    schVoirie = (ps.fig_voirie(P, pt, idxV, ecs)
-                 + f'<div class="schema-caption">On repère la façade sur rue (la <em>voirie</em>) : '
-                 f'arête <strong>{_esc(voirie.get("edge_label"))}</strong> (en rouge), à {_n(ddw)} m de '
-                 f'l\'adresse (trait bleu).{cad_cap}</div>')
+    schVoirie = (f'<div class="schema-caption">Façade sur rue retenue : arête '
+                 f'<strong>{_esc(voirie.get("edge_label"))}</strong>, à {_n(ddw)} m de l\'adresse.{cad_cap}</div>')
 
     # --- schema 3b : candidats fond ---
     cands = fond.get("candidats") or []
@@ -258,20 +257,17 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
         clegend += (f'<div class="{rowcls}"><span class="cand-label">{_esc(c["fond_label"])}</span>'
                     f'<span class="cand-score">score {c.get("score_fond")}</span>'
                     f'<span class="cand-surf">{_n(c.get("surface_emprise_m2"))} m²</span>{pick}</div>')
-    schFond = (ps.fig_fond(P, idxV, idxF, cands)
-               + f'<div class="schema-caption">On teste les côtés candidats pour le fond. '
-               f'<strong>{_esc(fond.get("edge_label"))}</strong> est retenu (en vert). La façade rue '
-               f'{_esc(voirie.get("edge_label"))} est en rouge.</div><div class="cand-list">{clegend}</div>')
+    schFond = (f'<div class="schema-caption">Fond de parcelle retenu : '
+               f'<strong>{_esc(fond.get("edge_label"))}</strong>.</div><div class="cand-list">{clegend}</div>')
 
     # --- schema 4 : mitoyennete ---
     if mito and mito.get("edges"):
         nmurs = mito.get("n_murs_mitoyens_batis", 0)
         det_m = ", ".join(f'{x.get("label")} ({x.get("overlap_bati_m")} m de mur)'
                           for x in mito["edges"] if x.get("mur_mitoyen_bati"))
-        schMito = (ps.fig_mitoyennete(P, idxV, party)
-                   + f'<div class="schema-caption">{mito.get("n_batiments")} bâtiment(s) '
+        schMito = (f'<div class="schema-caption">{mito.get("n_batiments")} bâtiment(s) '
                    f'voisin(s) analysé(s). <strong>{nmurs}</strong> mur(s) mitoyen(s) bâti(s) détecté(s)'
-                   f'{(" : " + det_m) if det_m else ""}. Les côtés en orange passent en recul 0.</div>')
+                   f'{(" : " + det_m) if det_m else ""}.</div>')
     else:
         schMito = '<div class="schema-content"><div class="schema-caption">Détection de mitoyenneté bâtie indisponible pour cette parcelle.</div></div>'
 
@@ -288,12 +284,10 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     elens = [L for L in elens if L >= 1.5]
     dimres = (f' Gabarit au sol : environ <strong>{_n(elens[0])} m × {_n(elens[1])} m</strong>.'
               if len(elens) >= 2 else "")
-    schEmprise = (ps.fig_emprise(P, E)
-                  + f'<div class="schema-caption">La zone noire est l\'emprise constructible : '
+    schEmprise = (f'<div class="schema-caption">Emprise constructible : '
                   f'<strong>{emprise.get("surface_m2")} m²</strong> sur un terrain de '
                   f'<strong>{_n(_poly_area(P))} m²</strong>, soit '
-                  f'<strong>{_n((emprise.get("ratio_vs_cadastrale") or 0) * 100)}%</strong>.{dimres} '
-                  f'Les cotes sont en mètres.</div>')
+                  f'<strong>{_n((emprise.get("ratio_vs_cadastrale") or 0) * 100)}%</strong>.{dimres}</div>')
 
     # --- schema 6 : SCB ---
     schScb = ""
