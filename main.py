@@ -569,6 +569,16 @@ class PalladioFullRequest(PalladioRequest):
         description="Si True (defaut), corrige le bug HAB-1 (comptage logements base SCB "
                     "coherente). False = reproduit main.py v2.3 (mismatch d'unite, sous-compte ~20%).",
     )
+    recul_avant_methode: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Methode de recul avant typee (Palladio Scrap) : "
+                    "{type: fixe|alignement_voisins|lie_hauteur, fallback_m, coef_hauteur, plancher_m, ...}. "
+                    "Absent -> recul avant scalaire (comportement historique).",
+    )
+    corniche_effective_m: Optional[float] = Field(
+        default=None,
+        description="Hauteur a la corniche, pour le recul avant lie_hauteur.",
+    )
 # ============================================================
 # MAPPING AIRTABLE → MOTEUR
 # ============================================================
@@ -1483,6 +1493,8 @@ def calcul_palladio_full(req: PalladioFullRequest):
             profondeur_max_m=req.profondeur_max_m,
             parcelle_id=req.parcelle_id,
             corriger_hab1=req.corriger_hab1,
+            recul_avant_methode=req.recul_avant_methode,
+            corniche_effective_m=req.corniche_effective_m,
         )
     except PalladioError as e:
         from fastapi import HTTPException
