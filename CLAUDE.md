@@ -2,7 +2,32 @@
 
 > Document destiné à Claude Code (et tout autre instance de Claude qui prend le relais sur Palladio).
 > À lire **en entier** avant d'écrire la moindre ligne de code.
-> Dernière mise à jour : 2026-06-17 — fin de Sprint 1.5.
+> Dernière mise à jour : 2026-06-20 — Palladio Scrap + bascule prod + ménage archi.
+
+---
+
+## 0. Mise à jour 2026-06-20 (lire en premier — supersède des sections ci-dessous)
+
+Évolutions majeures depuis le Sprint 1.5. **En cas de contradiction, ce bloc fait foi.**
+
+- **Architecture API refactorée** (voir `ARCHITECTURE.md`, document de référence) :
+  - `main.py` est désormais **minimal** (~60 lignes : app + `/` + `/health` + `include_router`).
+  - Routes Palladio dans **`palladio_api.py`** ; moteur dans `palladio_engine.py` ;
+    **rendu HTML dans `palladio_render.py`** (sorti du node n8n de 39 Ko).
+- **Legacy OBB v2.3 SUPPRIMÉ** : routes `/calcul` et `/v2/calcul`, code OBB, et les workflows
+  n8n `fNY7LUzIeBHutwcT` (MVP Feasibility) + `gdawiNp1oMoYcwAL` (Terravalu draft) **désactivés**
+  (ne servaient plus, accord Vincent + Jules). → la consigne « ne pas toucher à main.py / à ces
+  workflows » des sections 1, 3 et 4 est **caduque** ; main.py est maintenant terrain libre.
+- **Prod bascule sur Palladio** : `XFOhmez4MtTnmtnL` appelle `POST /palladio/calcul/full/html`
+  (HTML rendu côté serveur ; le node « Assemble » est un passe-plat).
+- **Palladio Scrap** (moteur de règles multi-communes) : 4 communes pilotes en Airtable
+  (Strassen, Bertrange, Mamer, Junglinster). Schéma `palladio_scrap/SCHEMA.md`, données
+  `palladio_scrap/communes/*.json`, briefing `PALLADIO_SCRAP_BRIEFING.md`.
+- **Recul avant adaptatif** dans le moteur : `fixe` / `lie_hauteur` / `alignement_voisins`
+  (médiane des façades voisines, collection bâtiments 2214). Sortie `recul_avant_adaptatif`.
+- **Tests** (hors réseau) : `palladio_scrap/test_{alignment,render,contract}.py`.
+- **Reste** : finir le design des schémas (Vincent y reviendra) ; étendre Palladio Scrap
+  au-delà des 4 communes ; données graphiques (casier NQ) en vision.
 
 ---
 
