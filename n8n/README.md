@@ -12,9 +12,11 @@ recopier à la main de gros strings (cf. `CLAUDE.md`).
 → Respond JSON (text/html)`
 
 **Page d'accueil** (formulaire + cockpit de couverture) :
-`Webhook Form → List Zones PAG → List Stationnement → List Velo → List Servitudes
-→ List PAP NQ → List Communes → Build Landing Payload
-→ Render Landing (POST /palladio/landing/html) → Serve Form HTML (text/html)`
+`Webhook Form → Fetch Landing (GET /palladio/landing/html) → Serve Form HTML (text/html)`
+Un seul appel HTTP. L'API lit Airtable **côté serveur** (en cache 5 min,
+`airtable_landing.py`) et rend la page. On ne liste **plus** Airtable depuis n8n ici :
+6 appels Airtable par visite saturaient la limite (5 req/s) et faisaient ramer/planter
+la page d'accueil.
 
 ## Fichiers
 - **`Build_Palladio_Payload.js`** — mappe les règles Airtable dans `zone_pag`, construit
@@ -23,11 +25,12 @@ recopier à la main de gros strings (cf. `CLAUDE.md`).
 - **`Assemble_Palladio_Page.js`** — **passe-plat** : le HTML est désormais rendu côté
   serveur (`palladio_render.py`, route `/palladio/calcul/full/html`). Ce node récupère
   juste le HTML renvoyé. L'ancien node de 39 Ko a été supprimé.
-- **`Build_Landing_Payload.js`** — agrège les 6 tables Airtable listées et les passe au
-  rendu serveur (`cockpit_render.py`, route `/palladio/landing/html`). Le node
-  **Serve Form HTML** rend désormais cette page (formulaire + cockpit), plus le
-  formulaire statique d'avant. Les 6 nodes `List *` sont des Airtable `search`
-  (returnAll, sans filtre) sur la base `appFUtt83fMC6NwgU`.
+- **Page d'accueil** — plus de node Code ni de nodes Airtable côté n8n. Le node
+  **Fetch Landing** (HTTP GET) appelle l'endpoint `/palladio/landing/html` qui lit
+  Airtable côté serveur (cache) et rend la page (formulaire + cockpit,
+  `cockpit_render.py`). **Serve Form HTML** renvoie ce HTML (`{{ $json.data }}`).
+  Le cockpit ne s'affiche que si la variable d'env Railway `AIRTABLE_API_KEY` est
+  définie ; sinon la page affiche le formulaire seul (dégradation gracieuse).
 
 ## Procédure de mise à jour
 `get_workflow_details` → `update_workflow` (draft, `setNodeParameter /jsCode`) →

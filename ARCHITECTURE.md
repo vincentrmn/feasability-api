@@ -43,13 +43,16 @@ Déployée depuis ce repo (branche `main`, auto-deploy Railway, healthcheck `/he
 | `palladio_api.py` | Contrat HTTP : modèles `PalladioRequest`/`PalladioFullRequest` + 3 routes. Aucune logique métier. |
 | `palladio_engine.py` | **Le moteur** : enveloppe (reculs + voirie cadastrale + mitoyenneté bâtie + recul avant adaptatif), SCB, logements, parkings, type construction, warnings. |
 | `palladio_render.py` | Génère la page HTML pédagogique (9 étapes + schémas SVG) depuis la réponse moteur. |
-| `cockpit_render.py` | Page d'accueil : formulaire d'adresse + cockpit de couverture des communes (calcul de statut + rendu). |
+| `cockpit_render.py` | Page d'accueil : formulaire d'adresse + cockpit de couverture des communes (calcul de statut + rendu). Fonctions pures, testées. |
+| `airtable_landing.py` | Lecture côté serveur des tables Airtable pour le cockpit, cache TTL 5 min, dégradation gracieuse si `AIRTABLE_API_KEY` absente. |
 
 ### Routes
 - `POST /palladio/calcul` — enveloppe + voirie (Sprint 1/1.5), JSON.
 - `POST /palladio/calcul/full` — enveloppe + SCB + logements + parkings + warnings, JSON.
 - `POST /palladio/calcul/full/html` — idem + **rendu HTML** (consommé par n8n).
-- `POST /palladio/landing/html` — page d'accueil (formulaire + cockpit), depuis les tables Airtable fournies par n8n.
+- `GET /palladio/landing/html` — **page d'accueil** (formulaire + cockpit). Lit Airtable
+  côté serveur en cache et rend via `cockpit_render.py`. Servie par le webhook n8n
+  `/webhook/palladio` (un seul appel HTTP, pas d'appel Airtable depuis n8n).
 - `GET /` , `GET /health` — smoke test / statut.
 
 Legacy retiré le 2026-06-20 : moteur OBB v2.3, routes `/calcul` et `/v2/calcul`,
