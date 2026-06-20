@@ -20,8 +20,6 @@ from typing import Dict, Any, List, Tuple, Optional
 import math
 import html as _h
 
-import palladio_schemas as ps
-
 FORM_URL = "https://n8n-production-8929d.up.railway.app/webhook/palladio"
 
 # Passe de de-collision des labels (cote navigateur) : mesure les vraies boites
@@ -228,27 +226,58 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     vdots = "".join(f'<circle cx="{px(p[0])}" cy="{py(p[1])}" r="0.9" class="dot-vertex"/>' for p in P)
     ptgeo = f'<circle cx="{px(pt[0])}" cy="{py(pt[1])}" r="1.4" class="dot-geocode"/>'
 
-    # --- schema 1 : plan d'ensemble (parcelle + zone constructible + rue) ---
-    schParcelle = (ps.fig_overview(P, E, pt, idxV)
-                   + f'<div class="schema-caption">Plan : la parcelle (<strong>{_n(_poly_area(P))} m²</strong>, '
-                   f'{n} sommets), la <strong>zone constructible</strong> en noir, la façade sur rue en rouge, '
-                   f'le point bleu = l\'adresse.</div>')
+    # --- schema 1 : parcelle ---
+    schParcelle = (f'<svg viewBox="{vb}" class="schema-svg"><polygon points="{p2svg(P)}" class="parcel-fill"/>'
+                   f'{vdots}{vlabels}{ptgeo}</svg>'
+                   f'<div class="schema-caption">Polygone cadastral (LUREF), {n} sommets. Surface '
+                   f'<strong>{_n(_poly_area(P))} m²</strong>. Le point bleu est l\'adresse géocodée.</div>')
 
-    # --- schema 3a : voirie ---
+    # --- schema 3a : voirie (distances + overlay cadastral) ---
+    # On ne cote QUE la facade rue retenue (deportee a l'exterieur) : sur les parcelles
+    # etroites/en drapeau, coter chaque arete rendait le schema illisible.
+    ev = ""
+    for i in range(n):
+        a, b = P[i], P[(i + 1) % n]
+        cls = "edge-voirie-winner" if i == idxV else "edge-voirie-other"
+        ev += f'<line x1="{px(a[0])}" y1="{py(a[1])}" x2="{px(b[0])}" y2="{py(b[1])}" class="{cls}"/>'
     ddw = dist_pt_seg(pt, P[idxV], P[(idxV + 1) % n])
-    cad_cap = ""
+    wlab = edge_out(idxV, loff)
+    ev += f'<text x="{px(wlab[0])}" y="{py(wlab[1])}" class="lbl-edge-winner">rue {_n(ddw)}m</text>'
+    overlay, cad_cap = "", ""
     det = voirie.get("detection") or {}
     ecs = det.get("edges_classified") or []
     if ecs:
+        for ec in ecs:
+            color = "#c9a961" if ec.get("is_voirie") else "#bbb"
+            wdt = "1.4" if ec.get("is_voirie") else "0.5"
+            overlay += (f'<line x1="{px(ec["p1"][0])}" y1="{py(ec["p1"][1])}" x2="{px(ec["p2"][0])}" '
+                        f'y2="{py(ec["p2"][1])}" stroke="{color}" stroke-width="{wdt}" fill="none"/>')
         nbv = sum(1 for e in ecs if e.get("is_voirie"))
         tot = sum(e.get("length_m", 0) for e in ecs if e.get("is_voirie"))
         cad_cap = (f' Les arêtes en ambre touchent le domaine public : <strong>{nbv}</strong> sur '
                    f'{len(ecs)} ({_n(tot)} m de façade rue).')
-    schVoirie = (f'<div class="schema-caption">Façade sur rue retenue : arête '
-                 f'<strong>{_esc(voirie.get("edge_label"))}</strong>, à {_n(ddw)} m de l\'adresse.{cad_cap}</div>')
+    wmid = edge_mid(idxV)
+    schVoirie = (f'<svg viewBox="{vb}" class="schema-svg"><polygon points="{p2svg(P)}" class="parcel-fill-light"/>'
+                 f'{ev}{overlay}{vlabels}<line x1="{px(pt[0])}" y1="{py(pt[1])}" x2="{px(wmid[0])}" '
+                 f'y2="{py(wmid[1])}" class="line-perp"/>{ptgeo}</svg>'
+                 f'<div class="schema-caption">On repère la façade sur rue (la <em>voirie</em>) : '
+                 f'arête <strong>{_esc(voirie.get("edge_label"))}</strong>, à {_n(ddw)} m de l\'adresse '
+                 f'(trait bleu).{cad_cap}</div>')
 
     # --- schema 3b : candidats fond ---
     cands = fond.get("candidats") or []
+    ccol = ["#222", "#555", "#888"]
+    csvg = ""
+    for k, c in enumerate(cands):
+        a, b = P[c["idx_fond"]], P[(c["idx_fond"] + 1) % n]
+        chosen = (c["idx_fond"] == idxF)
+        stroke = "#000" if chosen else ccol[k % 3]
+        wdt = "1.3" if chosen else "0.7"
+        dash = "" if chosen else "1.6,1.6"
+        csvg += (f'<line x1="{px(a[0])}" y1="{py(a[1])}" x2="{px(b[0])}" y2="{py(b[1])}" stroke="{stroke}" '
+                 f'stroke-width="{wdt}" stroke-dasharray="{dash}" fill="none"/>')
+    aW, bW = P[idxV], P[(idxV + 1) % n]
+    vline = f'<line x1="{px(aW[0])}" y1="{py(aW[1])}" x2="{px(bW[0])}" y2="{py(bW[1])}" stroke="#c00" stroke-width="1.4" fill="none"/>'
     clegend = ""
     for c in cands:
         chosen = c["idx_fond"] == idxF
@@ -257,37 +286,109 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
         clegend += (f'<div class="{rowcls}"><span class="cand-label">{_esc(c["fond_label"])}</span>'
                     f'<span class="cand-score">score {c.get("score_fond")}</span>'
                     f'<span class="cand-surf">{_n(c.get("surface_emprise_m2"))} m²</span>{pick}</div>')
-    schFond = (f'<div class="schema-caption">Fond de parcelle retenu : '
-               f'<strong>{_esc(fond.get("edge_label"))}</strong>.</div><div class="cand-list">{clegend}</div>')
+    schFond = (f'<svg viewBox="{vb}" class="schema-svg"><polygon points="{p2svg(P)}" class="parcel-fill-light"/>'
+               f'{csvg}{vline}{vlabels}</svg><div class="schema-caption">On teste les côtés candidats pour '
+               f'le fond. <strong>{_esc(fond.get("edge_label"))}</strong> est retenu. La façade rue '
+               f'{_esc(voirie.get("edge_label"))} est en rouge.</div><div class="cand-list">{clegend}</div>')
 
     # --- schema 4 : mitoyennete ---
     if mito and mito.get("edges"):
+        me = ""
+        for i in range(n):
+            a, b = P[i], P[(i + 1) % n]
+            isp = i in party
+            isv = (i == idxV)
+            color = "#e08a2e" if isp else ("#2962ff" if isv else "#ccc")
+            wdt = "1.6" if isp else ("0.9" if isv else "0.45")
+            lbl = ""
+            if isp:
+                m = edge_mid(i)
+                lbl = f'<text x="{px(m[0])}" y="{py(m[1])}" class="lbl-mito">mur mitoyen</text>'
+            me += f'<line x1="{px(a[0])}" y1="{py(a[1])}" x2="{px(b[0])}" y2="{py(b[1])}" stroke="{color}" stroke-width="{wdt}" fill="none"/>{lbl}'
         nmurs = mito.get("n_murs_mitoyens_batis", 0)
         det_m = ", ".join(f'{x.get("label")} ({x.get("overlap_bati_m")} m de mur)'
                           for x in mito["edges"] if x.get("mur_mitoyen_bati"))
-        schMito = (f'<div class="schema-caption">{mito.get("n_batiments")} bâtiment(s) '
+        schMito = (f'<svg viewBox="{vb}" class="schema-svg"><polygon points="{p2svg(P)}" class="parcel-fill-light"/>'
+                   f'{me}{vlabels}</svg><div class="schema-caption">{mito.get("n_batiments")} bâtiment(s) '
                    f'voisin(s) analysé(s). <strong>{nmurs}</strong> mur(s) mitoyen(s) bâti(s) détecté(s)'
-                   f'{(" : " + det_m) if det_m else ""}.</div>')
+                   f'{(" : " + det_m) if det_m else ""}. Les côtés en orange passent en recul 0.</div>')
     else:
         schMito = '<div class="schema-content"><div class="schema-caption">Détection de mitoyenneté bâtie indisponible pour cette parcelle.</div></div>'
 
-    # --- schema 5a : implantation (emprise + cotes des reculs, zoom batissable) ---
-    schLateral = (ps.fig_implantation(P, E, idxV, idxF, ra, rl, rr)
-                  + f'<div class="schema-caption">Implantation du bâtiment : recul avant '
-                  f'<strong>{raS} m</strong> (rue), arrière <strong>{rr} m</strong> (fond), latéral '
-                  f'<strong>{rl} m</strong>{" — 0 m sur les côtés mitoyens" if party else ""}.</div>')
-    schAvAr = ""
+    # --- schema 5a : reculs lateraux ---
+    lat = ""
+    for i in range(n):
+        if i == idxV or i == idxF:
+            continue
+        m = edge_mid(i)
+        if i in party:
+            a, b = P[i], P[(i + 1) % n]
+            lat += f'<line x1="{px(a[0])}" y1="{py(a[1])}" x2="{px(b[0])}" y2="{py(b[1])}" class="edge-mitoyen"/>'
+            lat += f'<text x="{px(m[0])}" y="{py(m[1])}" class="lbl-mito">mitoyen 0m</text>'
+        else:
+            o = edge_off(i, rl)
+            om = [(o[0][0] + o[1][0]) / 2, (o[0][1] + o[1][1]) / 2]
+            lat += f'<line x1="{px(o[0][0])}" y1="{py(o[0][1])}" x2="{px(o[1][0])}" y2="{py(o[1][1])}" class="line-recul-lateral"/>'
+            lat += f'<text x="{px(om[0])}" y="{py(om[1])}" class="lbl-recul">{rl}m</text>'
+    schLateral = (f'<svg viewBox="{vb}" class="schema-svg"><polygon points="{p2svg(P)}" class="parcel-fill-light"/>'
+                  f'{lat}{vlabels}</svg><div class="schema-caption">Reculs latéraux : <strong>{rl} m</strong> '
+                  f'de chaque côté{", sauf sur le(s) côté(s) mitoyen(s) en orange où le recul tombe à <strong>0</strong>" if party else ""}.</div>')
 
-    # --- schema 5c : emprise cotee ---
-    elens = sorted((math.hypot(E[(i + 1) % len(E)][0] - E[i][0], E[(i + 1) % len(E)][1] - E[i][1])
-                    for i in range(len(E))), reverse=True) if E else []
-    elens = [L for L in elens if L >= 1.5]
+    # --- schema 5b : cotes avant / arriere / profondeur ---
+    cA = edge_off(idxV, ra)
+    cAr = edge_off(idxF, rr)
+    mA = [(cA[0][0] + cA[1][0]) / 2, (cA[0][1] + cA[1][1]) / 2]
+    mAr = [(cAr[0][0] + cAr[1][0]) / 2, (cAr[0][1] + cAr[1][1]) / 2]
+    cProf = ""
+    if profMax:
+        cp = edge_off(idxV, ra + profMax)
+        pm = [(cp[0][0] + cp[1][0]) / 2, (cp[0][1] + cp[1][1]) / 2]
+        cProf = (f'<line x1="{px(cp[0][0])}" y1="{py(cp[0][1])}" x2="{px(cp[1][0])}" y2="{py(cp[1][1])}" class="line-recul-prof"/>'
+                 f'<text x="{px(pm[0])}" y="{py(pm[1])}" class="lbl-recul-prof">prof max {raS}+{profMax}={round(ra+profMax,1)}m</text>')
+    aF, bF = P[idxF], P[(idxF + 1) % n]
+    schAvAr = (f'<svg viewBox="{vb}" class="schema-svg"><polygon points="{p2svg(P)}" class="parcel-fill-light"/>'
+               f'<line x1="{px(aW[0])}" y1="{py(aW[1])}" x2="{px(bW[0])}" y2="{py(bW[1])}" class="edge-voirie-thick"/>'
+               f'<line x1="{px(aF[0])}" y1="{py(aF[1])}" x2="{px(bF[0])}" y2="{py(bF[1])}" class="edge-fond-thick"/>'
+               f'<line x1="{px(cA[0][0])}" y1="{py(cA[0][1])}" x2="{px(cA[1][0])}" y2="{py(cA[1][1])}" class="line-recul-avant"/>'
+               f'<text x="{px(mA[0])}" y="{py(mA[1])}" class="lbl-recul-avant">avant {raS}m</text>'
+               f'<line x1="{px(cAr[0][0])}" y1="{py(cAr[0][1])}" x2="{px(cAr[1][0])}" y2="{py(cAr[1][1])}" class="line-recul-arriere"/>'
+               f'<text x="{px(mAr[0])}" y="{py(mAr[1])}" class="lbl-recul-arriere">arriere {rr}m</text>{cProf}{vlabels}</svg>'
+               f'<div class="schema-caption">Recul avant de <strong>{raS} m</strong> depuis la rue '
+               f'({_esc(voirie.get("edge_label"))}), recul arrière de <strong>{rr} m</strong> depuis le fond '
+               f'({_esc(fond.get("edge_label"))})'
+               f'{(", et profondeur bâtie limitée à " + str(round(ra+profMax,1)) + " m depuis la rue") if profMax else ""}.</div>')
+
+    # --- schema 5c : emprise ---
+    edims = ""
+    ne = len(E)
+    ecx = sum(q[0] for q in E) / ne if ne else 0
+    ecy = sum(q[1] for q in E) / ne if ne else 0
+    elens = []
+    for i in range(ne):
+        a, b = E[i], E[(i + 1) % ne]
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        if L < 1.5:
+            continue
+        elens.append(L)
+        mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        Ln = math.hypot(dx, dy) or 1
+        nx, ny = dy / Ln, -dx / Ln
+        if nx * (mx - ecx) + ny * (my - ecy) < 0:
+            nx, ny = -nx, -ny
+        mx += nx * doff
+        my += ny * doff
+        edims += f'<text x="{px(mx)}" y="{py(my)}" class="lbl-dim">{_n(L)}m</text>'
+    elens.sort(reverse=True)
     dimres = (f' Gabarit au sol : environ <strong>{_n(elens[0])} m × {_n(elens[1])} m</strong>.'
               if len(elens) >= 2 else "")
-    schEmprise = (f'<div class="schema-caption">Emprise constructible : '
+    schEmprise = (f'<svg viewBox="{vb}" class="schema-svg"><polygon points="{p2svg(P)}" class="parcel-fill-final"/>'
+                  f'<polygon points="{p2svg(E)}" class="emprise-fill"/>{edims}{vlabels}</svg>'
+                  f'<div class="schema-caption">La zone noire est l\'emprise constructible : '
                   f'<strong>{emprise.get("surface_m2")} m²</strong> sur un terrain de '
                   f'<strong>{_n(_poly_area(P))} m²</strong>, soit '
-                  f'<strong>{_n((emprise.get("ratio_vs_cadastrale") or 0) * 100)}%</strong>.{dimres}</div>')
+                  f'<strong>{_n((emprise.get("ratio_vs_cadastrale") or 0) * 100)}%</strong>.{dimres} '
+                  f'Les cotes sont en mètres.</div>')
 
     # --- schema 6 : SCB ---
     schScb = ""
@@ -479,7 +580,7 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             f'<style>{_styles()}</style></head><body>{topbar}<div class="wrap">{hero}{s}'
             f'<a class="btn-home btn-home-bottom" href="{FORM_URL}">← Nouvelle recherche</a>'
             f'<footer class="footer"><span>Palladio engine {_esc(meta.get("version"))}</span></footer></div>'
-            f'</body></html>')
+            f'{_DECLUTTER_JS}</body></html>')
 
 
 def _error_page(adresse, msg):
@@ -514,7 +615,6 @@ def _styles():
             ".section-text{font-size:14px;color:#333;line-height:1.65}.section-text ul{margin:10px 0 2px 18px}.section-text li{margin:4px 0}"
             ".art{color:var(--muted);font-size:.85em;font-weight:400}.sources{font-size:12px;color:var(--muted);margin:10px 0 0}"
             ".schema{margin-top:16px}.schema-svg{width:100%;height:auto;max-height:440px;display:block;background:#fff;border:1px solid #f0f0f0;border-radius:8px}"
-            ".schema-img{width:100%;height:auto;display:block;border:1px solid #f0f0f0;border-radius:8px;background:#fff}"
             ".schema-caption{font-size:13px;color:#555;margin-top:10px;line-height:1.55}.schema-content{padding:4px 0}"
             ".text-row{display:grid;grid-template-columns:minmax(120px,210px) 1fr;gap:12px;padding:9px 0;border-bottom:1px solid #f0f0f0}.text-row:last-child{border-bottom:0}"
             ".k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}.v{font-size:14px}"
