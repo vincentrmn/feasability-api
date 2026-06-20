@@ -32,19 +32,22 @@
     {
       "code_pap": "HAB-2", "zone_pag": ["HAB-2"], "regime": "QE",
       "libelle": "Zone d'habitation 2",
-      "recul_avant":   { "type": "alignement_voisins", "fallback_m": null, "source_article": "Art. 3.1",
-                          "regle": "alignement façades voisines ; non obligatoire au-delà de 6m", "note": "fallback à confirmer" },
-      "recul_lateral": { "type": "fixe", "min_m": null, "zero_si_accole": true, "note": "à confirmer" },
-      "recul_arriere": { "type": "fixe", "min_m": null, "note": "à confirmer" },
-      "profondeur_max_m": 15, "profondeur_sous_sol_max_m": 20,
+      "recul_avant":   { "type": "alignement_voisins", "fallback_m": 4, "source_article": "Art. 3.1",
+                          "regle": "alignement façades voisines ; non obligatoire au-delà de 6m ; fallback 4m si absence de voisins" },
+      "recul_lateral": { "type": "fixe", "min_m": 3, "zero_si_accole": true, "source_article": "Art. 3.1",
+                          "note": "0 si jumelé/groupé en bande ; distance entre constructions 6m" },
+      "recul_arriere": { "type": "fixe", "min_m": 10, "source_article": "Art. 3.1" },
+      "profondeur_max_m": 15, "profondeur_sous_sol_max_m": 20, "bande_construction_max_m": 20,
+      "regime_voirie_special": { "voies": ["rte d'Arlon", "rues du Centre/Libération (Mamer)", "Kiem/Basse/Rannerwee/Dr.Frieden/Gare (Capellen)"], "bande_construction_max_m": 40 },
       "hauteur_modele": "par_niveaux",
       "hauteur_par_niveaux": [
         { "niveaux": 2, "corniche_m": 7.5, "acrotere_m": 8.5 },
         { "niveaux": 3, "corniche_m": 9.5, "acrotere_m": 10.5 }
       ],
       "cos_max": null, "css_max": null,
-      "logements_modele": "formule",
-      "notes": "Extraction partielle au pilote — latéral/arrière à compléter (texte présent, non encore extrait).",
+      "logements_modele": "graphique",
+      "logements_formule": "6 (lettre c) ou 8 (lettre d) logements max par immeuble plurifamilial ; lettre en partie graphique du PAP QE.",
+      "notes": "Profondeur RDC commerce 20m. COS/CSS absents.",
       "confiance": "auto"
     }
   ],
