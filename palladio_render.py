@@ -315,6 +315,58 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     else:
         schMito = '<div class="schema-content"><div class="schema-caption">Détection de mitoyenneté bâtie indisponible pour cette parcelle.</div></div>'
 
+    # --- schema 4bis : alignement sur les facades voisines (recul avant adaptatif) ---
+    # Cadrage LOCAL (les batiments voisins debordent de la parcelle) : on ne touche
+    # pas au viewBox partage des autres schemas.
+    schAlign = ""
+    if adapt.get("type") == "alignement_voisins":
+        vz = adapt.get("voisins") or []
+        axs = [p[0] for p in P]
+        ays = [p[1] for p in P]
+        for v in vz:
+            for q in v.get("coords", []):
+                axs.append(q[0]); ays.append(q[1])
+        aspan = max(max(axs) - min(axs), max(ays) - min(ays)) or 1
+        amg = aspan * 0.08 + 1.5
+        axmin, aymin = min(axs) - amg, min(ays) - amg
+        aWl = (max(axs) + amg) - axmin
+        aHl = (max(ays) + amg) - aymin
+        aF = 100.0 / (max(aWl, aHl) or 1)
+        avb = f"0 0 {aWl * aF:.2f} {aHl * aF:.2f}"
+        def apx(x): return f"{(x - axmin) * aF:.2f}"
+        def apy(y): return f"{(aHl - (y - aymin)) * aF:.2f}"
+        def ap2(pts): return " ".join(f"{(x - axmin) * aF:.2f},{(aHl - (y - aymin)) * aF:.2f}" for x, y in pts)
+        nb = ""
+        for v in vz:
+            ret = v.get("retenu")
+            col = "#e08a2e" if ret else "#cfcfcf"
+            op = "0.5" if ret else "0.22"
+            cd = v.get("coords") or []
+            nb += f'<polygon points="{ap2(cd)}" fill="{col}" fill-opacity="{op}" stroke="{col}" stroke-width="0.5"/>'
+            if ret and cd:
+                cxv = sum(c[0] for c in cd) / len(cd)
+                cyv = sum(c[1] for c in cd) / len(cd)
+                nb += f'<text x="{apx(cxv)}" y="{apy(cyv)}" class="lbl-mito">{_esc(v.get("cote"))} {v.get("front_m")}m</text>'
+        aWv, bWv = P[idxV], P[(idxV + 1) % n]
+        al = edge_off(idxV, ra)
+        alm = [(al[0][0] + al[1][0]) / 2, (al[0][1] + al[1][1]) / 2]
+        nb += (f'<line x1="{apx(aWv[0])}" y1="{apy(aWv[1])}" x2="{apx(bWv[0])}" y2="{apy(bWv[1])}" class="edge-voirie-thick"/>'
+               f'<line x1="{apx(al[0][0])}" y1="{apy(al[0][1])}" x2="{apx(al[1][0])}" y2="{apy(al[1][1])}" class="line-recul-avant"/>'
+               f'<text x="{apx(alm[0])}" y="{apy(alm[1])}" class="lbl-recul-avant">aligné {raS}m</text>')
+        g, d = adapt.get("cote_gauche_m"), adapt.get("cote_droite_m")
+        if adapt.get("fallback_used"):
+            cap = ("Aucun voisin bâti exploitable de part et d'autre : on retombe sur le "
+                   f"<strong>minimum réglementaire {raS} m</strong>.")
+        else:
+            parts = []
+            if g is not None: parts.append(f"gauche {g:g} m")
+            if d is not None: parts.append(f"droite {d:g} m")
+            cap = (f"Recul avant <em>aligné sur les voisins immédiats</em> ({', '.join(parts)}) → "
+                   f"<strong>{raS} m</strong>. En orange : les façades voisines retenues ; en gris : les autres "
+                   f"bâtiments vus mais écartés (2ᵉ rang, garages, angle).")
+        schAlign = (f'<svg viewBox="{avb}" class="schema-svg"><polygon points="{ap2(P)}" class="parcel-fill-light"/>'
+                    f'{nb}</svg><div class="schema-caption">{cap}</div>')
+
     # --- schema 5a : reculs lateraux ---
     lat = ""
     for i in range(n):
@@ -497,6 +549,17 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     else:
         txtMito = "Détection des murs mitoyens indisponible ; les reculs latéraux standards s'appliquent."
 
+    txtAlign = ""
+    if schAlign:
+        if adapt.get("fallback_used"):
+            txtAlign = ("Dans cette commune, le recul avant n'est pas un chiffre fixe : il doit "
+                        "s'<em>aligner sur les constructions voisines</em>. Faute de voisin bâti exploitable ici, "
+                        "on applique le minimum réglementaire.")
+        else:
+            txtAlign = ("Dans cette commune, le recul avant s'<em>aligne sur les façades des maisons voisines</em> "
+                        "plutôt que sur un chiffre fixe. On mesure la façade du voisin immédiat de chaque côté de "
+                        "la rue et on en retient la moyenne.")
+
     txtPlacement = (f"On part des <strong>{_f(terrain)} m²</strong> du terrain et on retire les bandes "
                     f"inconstructibles : {raS} m le long de la rue, {rl} m de chaque côté (sauf mitoyens), "
                     f"{rr} m au fond. L'emprise au sol constructible est de <strong>{_f(empM2)} m²</strong>, "
@@ -553,6 +616,8 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
     nn += 1; s += section(nn, "Les règles d'urbanisme de votre zone", txtRegles, "")
     nn += 1; s += section(nn, "On identifie la rue et le fond", txtRueFond, schVoirie + schFond)
     nn += 1; s += section(nn, "Mitoyenneté : les murs déjà accolés", txtMito, schMito)
+    if schAlign:
+        nn += 1; s += section(nn, "Alignement sur les façades voisines", txtAlign, schAlign)
     nn += 1; s += section(nn, "Où peut-on poser le bâtiment ?", txtPlacement, schLateral + schAvAr + schEmprise)
     if scb:
         nn += 1; s += section(nn, "Combien de surface de plancher ?", txtScb, schScb)

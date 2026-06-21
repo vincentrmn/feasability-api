@@ -961,11 +961,8 @@ def alignment_band_ra(p1: List[float], p2: List[float],
     L = math.hypot(dx, dy)
     ux, uy = (dx / L, dy / L) if L > 1e-9 else (0.0, 0.0)
 
-    # Candidats retenus : (front_m, position_laterale_pc, cote)
-    gauche: List[Tuple[float, float]] = []   # (pc, front)  pc <= 0
-    droite: List[Tuple[float, float]] = []   # (pc, front)  pc >= L
-    en_face: List[Tuple[float, float]] = []  # (pc, front)  0 < pc < L
-    all_fronts: List[float] = []
+    # Candidats retenus, avec geometrie LUREF (pour le schema d'alignement HTML).
+    cands: List[Dict[str, Any]] = []
     for poly in neighbor_polys_luref or []:
         if poly is None or poly.is_empty:
             continue
@@ -982,37 +979,38 @@ def alignment_band_ra(p1: List[float], p2: List[float],
         if front > ALIGN_DIST_CAP_M:         # trop loin pour etre un recul avant
             continue
         pc = sum(proj) / len(proj)           # position laterale (centre du batiment)
-        all_fronts.append(front)
-        if pc <= 0:
-            gauche.append((pc, front))
-        elif pc >= L:
-            droite.append((pc, front))
-        else:
-            en_face.append((pc, front))
+        cote = "gauche" if pc <= 0 else ("droite" if pc >= L else "face")
+        cands.append({"front": front, "pc": pc, "cote": cote, "retenu": False,
+                      "coords": [[round(vx, 2), round(vy, 2)] for vx, vy in coords]})
 
     # Voisin immediat de chaque cote : gauche = pc le plus grand (proche du bord 0),
     # droite = pc le plus petit (proche du bord L).
+    gauche = [c for c in cands if c["cote"] == "gauche"]
+    droite = [c for c in cands if c["cote"] == "droite"]
+    en_face = [c for c in cands if c["cote"] == "face"]
     adjacents: List[float] = []
     if gauche:
-        fg = max(gauche, key=lambda t: t[0])[1]
-        info["cote_gauche_m"] = round(fg, 2)
-        adjacents.append(fg)
+        cg = max(gauche, key=lambda c: c["pc"]); cg["retenu"] = True
+        info["cote_gauche_m"] = round(cg["front"], 2); adjacents.append(cg["front"])
     if droite:
-        fd = min(droite, key=lambda t: t[0])[1]
-        info["cote_droite_m"] = round(fd, 2)
-        adjacents.append(fd)
+        cd = min(droite, key=lambda c: c["pc"]); cd["retenu"] = True
+        info["cote_droite_m"] = round(cd["front"], 2); adjacents.append(cd["front"])
     # Aucun voisin lateral mais un batiment directement en face -> on l'utilise.
     if not adjacents and en_face:
-        adjacents.append(min(f for _, f in en_face))
+        cf = min(en_face, key=lambda c: c["front"]); cf["retenu"] = True
+        adjacents.append(cf["front"])
+
+    info["fronts_m"] = sorted(round(c["front"], 2) for c in cands)
+    # Geometrie des voisins (cap raisonnable pour le payload) -> schema HTML.
+    info["voisins"] = [{"coords": c["coords"], "front_m": round(c["front"], 2),
+                        "cote": c["cote"], "retenu": c["retenu"]} for c in cands[:14]]
 
     if not adjacents:
         info["fallback_used"] = True
-        info["fronts_m"] = [round(f, 2) for f in sorted(all_fronts)]
         return fallback_m, info
 
     ra = sum(adjacents) / len(adjacents)
     info["n_voisins_utiles"] = len(adjacents)
-    info["fronts_m"] = [round(f, 2) for f in sorted(all_fronts)]
     info["fronts_adjacent_m"] = [round(f, 2) for f in adjacents]
     info["recul_align_m"] = round(ra, 2)
     return ra, info
