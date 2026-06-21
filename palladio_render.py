@@ -19,12 +19,34 @@ Hauteur_corniche_max_m, Hauteur_faite_max_m, DL_max_log_ha} }. Tout est optionne
 from typing import Dict, Any, List, Tuple, Optional
 import math
 import re
+import json
 import html as _h
 from datetime import datetime
 
-# Génération PDF côté navigateur : capture le rendu écran (après le JS de mise en
-# page des schémas) et télécharge un vrai fichier .pdf, sans boîte d'impression.
-_HTML2PDF_CDN = "https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.2/dist/html2pdf.bundle.min.js"
+# Base de l'API (Railway) : la generation PDF tourne cote serveur (la page servie
+# par n8n est sandboxee -> impossible de generer le PDF cote navigateur).
+API_BASE = "https://web-production-afd8d.up.railway.app"
+
+# Styles des schemas REINJECTES a l'interieur de chaque <svg> : le moteur de rendu
+# PDF (WeasyPrint) n'applique PAS les classes CSS du <head> aux elements SVG, mais
+# il honore un <style> place dans le <svg>. (Le navigateur, lui, a deja le CSS du
+# head ; ce doublon est sans effet a l'ecran.)
+_SVG_STYLE = (
+    "<style>"
+    ".parcel-fill{fill:#fafafa;stroke:#111;stroke-width:0.5}.parcel-fill-light{fill:#fafafa;stroke:#bbb;stroke-width:0.45}.parcel-fill-final{fill:#f3f3f3;stroke:#888;stroke-width:0.45}"
+    ".emprise-fill{fill:#111;fill-opacity:0.85;stroke:#000;stroke-width:0.5}.dot-vertex{fill:#111}.dot-geocode{fill:#2962ff}"
+    ".lbl-vertex{font-size:4.2px;font-weight:700;fill:#111;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}"
+    ".edge-voirie-other{stroke:#ccc;stroke-width:0.5;fill:none}.edge-voirie-winner{stroke:#c00;stroke-width:1.2;fill:none}"
+    ".lbl-edge{font-size:3.4px;fill:#777;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:0.9;stroke-linejoin:round}.lbl-edge-winner{font-size:3.9px;fill:#c00;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}"
+    ".line-perp{stroke:#2962ff;stroke-width:0.5;stroke-dasharray:1.6,1.6;fill:none}.line-recul-lateral{stroke:#555;stroke-width:0.6;stroke-dasharray:1.8,1.8;fill:none}"
+    ".edge-mitoyen{stroke:#e08a2e;stroke-width:1.7;fill:none}.lbl-mito{font-size:3.4px;fill:#e08a2e;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}"
+    ".lbl-recul{font-size:3.2px;fill:#555;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:0.9;stroke-linejoin:round}"
+    ".lbl-dim{font-size:3.7px;font-weight:700;fill:#fff;paint-order:stroke;stroke:#111;stroke-width:1.1px;text-anchor:middle;dominant-baseline:middle}"
+    ".edge-voirie-thick{stroke:#c00;stroke-width:1.2;fill:none}.edge-fond-thick{stroke:#2a7;stroke-width:1.2;fill:none}"
+    ".line-recul-avant{stroke:#c00;stroke-width:0.6;stroke-dasharray:1.8,1.8;fill:none}.line-recul-arriere{stroke:#2a7;stroke-width:0.6;stroke-dasharray:1.8,1.8;fill:none}.line-recul-prof{stroke:#84c;stroke-width:0.55;stroke-dasharray:1,1;fill:none}"
+    ".lbl-recul-avant{font-size:3.3px;fill:#c00;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}.lbl-recul-arriere{font-size:3.3px;fill:#2a7;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}.lbl-recul-prof{font-size:3px;fill:#84c;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:0.9;stroke-linejoin:round}"
+    "</style>"
+)
 
 
 def _now_stamp() -> str:
@@ -38,26 +60,9 @@ def _now_stamp() -> str:
     return now.strftime("%d/%m/%Y à %H:%M")
 
 
-def _pdf_js(filename: str) -> str:
-    """Bouton "Télécharger en PDF" : html2pdf capture .wrap (le contenu, hors barre
-    d'actions) APRES le rendu/JS des schemas et telecharge un vrai .pdf. Fallback
-    sur l'impression navigateur si la lib CDN n'a pas charge."""
-    fn = filename.replace("'", "")
-    return (
-        "<script>function palladioPdf(){"
-        "var el=document.querySelector('.wrap');"
-        "if(!el||typeof html2pdf==='undefined'){window.print();return;}"
-        "var b=document.querySelector('.btn-pdf');"
-        "if(b){b.disabled=true;b.dataset.t=b.textContent;b.textContent='Génération…';}"
-        "function done(){if(b){b.disabled=false;b.textContent=b.dataset.t||'Télécharger en PDF';}}"
-        "var opt={margin:[8,8,10,8],filename:'" + fn + "',"
-        "image:{type:'jpeg',quality:0.96},"
-        "html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff',windowWidth:el.scrollWidth},"
-        "jsPDF:{unit:'mm',format:'a4',orientation:'portrait'},"
-        "pagebreak:{mode:['css','legacy'],avoid:['.section','.schema','.hero']}};"
-        "html2pdf().set(opt).from(el).save().then(done).catch(function(){done();window.print();});"
-        "}</script>"
-    )
+def _pdf_filename(adresse: str, parcel_label: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", (adresse or parcel_label or "etude")).strip("_").lower()[:50]
+    return f"palladio_{slug or 'etude'}.pdf"
 
 
 FORM_URL = "https://n8n-production-8929d.up.railway.app/webhook/palladio"
@@ -671,8 +676,11 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
                if lg else "")
     stamp = _now_stamp()
     ver = _esc(meta.get("version") or "")
-    _slug = re.sub(r"[^a-zA-Z0-9]+", "_", (adresse or parcel_label or "etude")).strip("_").lower()[:50] or "etude"
-    pdf_name = f"palladio_{_slug}.pdf"
+    # Form POST vers l'API (PDF genere cote serveur) : la page n8n est sandboxee,
+    # mais allow-forms + allow-downloads permettent ce telechargement.
+    pdf_payload = _h.escape(json.dumps(
+        {"response": resp, "adresse": adresse, "contexte": ctx},
+        ensure_ascii=False, default=str), quote=True)
     hero = (f'<div class="hero"><h1>{_esc(adresse)}</h1>'
             f'<div class="addr">Parcelle {_esc(parcel_label)} · zone {_esc(code_zone)}{(" · " + _esc(nomZone)) if nomZone else ""}</div>'
             f'<div class="gen">Étude générée le {stamp} · Palladio {ver}</div>'
@@ -685,7 +693,9 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             f'{kpi_log}</div></div>')
     topbar = (f'<div class="topbar"><span class="brand">Palladio</span>'
               f'<span class="topbar-actions">'
-              f'<button type="button" class="btn-pdf" onclick="palladioPdf()">Télécharger en PDF</button>'
+              f'<form class="pdf-form" method="POST" action="{API_BASE}/palladio/render/pdf" target="_blank">'
+              f'<input type="hidden" name="payload" value="{pdf_payload}">'
+              f'<button type="submit" class="btn-pdf">Télécharger en PDF</button></form>'
               f'<a class="btn-home" href="{FORM_URL}">← Nouvelle recherche</a></span></div>')
     return (f'<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Palladio · {_esc(adresse)}</title>'
@@ -694,9 +704,27 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             f'<a class="btn-home btn-home-bottom" href="{FORM_URL}">← Nouvelle recherche</a>'
             f'<footer class="footer"><span>Palladio engine {ver}</span>'
             f'<span>Étude générée le {stamp}</span></footer></div>'
-            f'<script src="{_HTML2PDF_CDN}"></script>'
-            f'{_pdf_js(pdf_name)}'
             f'{_DECLUTTER_JS}</body></html>')
+
+
+def render_palladio_pdf(response: Dict[str, Any], adresse: str = "",
+                        contexte: Optional[Dict[str, Any]] = None) -> Tuple[bytes, str]:
+    """Genere le PDF de l'etude cote serveur (WeasyPrint), a partir de la MEME page
+    HTML que l'ecran. Deux ajustements pour le moteur PDF :
+      - on injecte le <style> SVG dans chaque schema (WeasyPrint n'applique pas les
+        classes CSS du <head> aux elements SVG) ;
+      - on retire la police distante (rendu sans reseau, police systeme).
+    Import WeasyPrint differe : l'API demarre meme si la lib/les libs systeme
+    manquent. Retourne (pdf_bytes, filename)."""
+    from weasyprint import HTML  # import differe (libs systeme requises)
+    html = render_palladio_html(response, adresse, contexte)
+    html = html.replace('class="schema-svg">', 'class="schema-svg">' + _SVG_STYLE)
+    html = re.sub(r'<link[^>]*fonts\.googleapis[^>]*>', '', html)
+    pdf = HTML(string=html, base_url=API_BASE).write_pdf()
+    parcelle = (response or {}).get("parcelle") or {}
+    ctx = contexte or {}
+    fname = _pdf_filename(adresse, ctx.get("parcel_label") or parcelle.get("id") or "")
+    return pdf, fname
 
 
 def _error_page(adresse, msg):
@@ -756,7 +784,7 @@ def _styles():
             ".gen{font-size:12px;color:var(--muted);margin-top:4px}"
             ".topbar-actions{display:flex;align-items:center;gap:10px}"
             ".btn-pdf{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--ink);background:#fff;border:1px solid var(--ink);padding:8px 14px;border-radius:9px;cursor:pointer;font-family:inherit}"
-            ".btn-pdf:hover{background:var(--soft)}"
+            ".btn-pdf:hover{background:var(--soft)}.pdf-form{display:inline-flex;margin:0}"
             "@media(max-width:600px){.wrap{padding:18px 14px 60px}.section{padding:16px 14px}.text-row{grid-template-columns:1fr;gap:2px}.hero h1{font-size:20px}.kpi .value-big{font-size:23px}}"
             # --- impression / export PDF : on cache la barre d'actions et les boutons,
             # on neutralise le sticky, et on evite de couper schemas/sections en deux ---

@@ -5,15 +5,17 @@ Expose le moteur Palladio (palladio_engine) et le rendu HTML (palladio_render)
 via un APIRouter monte par main.py. Aucune logique metier ici : uniquement le
 contrat HTTP (modeles d'entree + routes), tout le calcul est dans palladio_engine.
 """
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import HTMLResponse
+import json
+
+from fastapi import APIRouter, HTTPException, Form
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
 
 from palladio_engine import (
     calculer_emprise_palladio, calculer_palladio_full, geocode_search, PalladioError,
 )
-from palladio_render import render_palladio_html
+from palladio_render import render_palladio_html, render_palladio_pdf
 from cockpit_render import compute_communes_status, render_landing_html
 from airtable_landing import fetch_landing_data
 
@@ -127,6 +129,30 @@ def calcul_palladio_full_html(req: PalladioFullRequest):
     """Idem /full mais renvoie la page HTML (renderer palladio_render)."""
     resp = _full(req)
     return HTMLResponse(content=render_palladio_html(resp, req.adresse or "", req.contexte))
+
+
+@router.post("/palladio/render/pdf")
+def palladio_render_pdf(payload: str = Form(...)):
+    """Genere le PDF de l'etude cote serveur et le renvoie en telechargement.
+
+    Appele par un form POST depuis la page resultat (servie sandboxee par n8n, ou
+    la generation PDF cote navigateur est impossible). `payload` = JSON
+    {response, adresse, contexte} deja calcule (pas de recalcul moteur)."""
+    try:
+        data = json.loads(payload)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="payload JSON invalide")
+    resp = data.get("response") or {}
+    if not resp:
+        raise HTTPException(status_code=400, detail="response manquante dans le payload")
+    try:
+        pdf, fname = render_palladio_pdf(resp, data.get("adresse") or "", data.get("contexte"))
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"Generation PDF indisponible : {e}")
+    except Exception as e:  # rendu PDF non bloquant pour le reste de l'API
+        raise HTTPException(status_code=500, detail=f"Echec generation PDF : {e}")
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @router.get("/palladio/search")
