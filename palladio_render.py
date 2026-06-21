@@ -786,10 +786,14 @@ def _ensure_find_library() -> None:
         found = _orig(name)
         if found:
             return found
-        for d in _dirs:
-            hits = sorted(glob.glob(os.path.join(d, "lib%s.so*" % name)))
-            if hits:
-                return hits[-1]
+        # normaliser le nom demande par cffi/WeasyPrint : enlever un prefixe 'lib'
+        # et un suffixe de version '-0' eventuels (ex: 'libgobject-2.0-0' -> 'gobject-2.0')
+        base = name[3:] if name.startswith("lib") else name
+        for cand in (base, re.sub(r"-\d+$", "", base)):
+            for d in _dirs:
+                hits = sorted(glob.glob(os.path.join(d, "lib%s.so*" % cand)))
+                if hits:
+                    return hits[-1]
         return None
 
     ctypes.util.find_library = _fl

@@ -143,8 +143,16 @@ def palladio_pdf_diag():
                     info["os"] = line.split("=", 1)[1].strip().strip('"'); break
     except Exception as e:
         info["os"] = f"?({e})"
-    info["find_library"] = {n: ctypes.util.find_library(n)
-                            for n in ("gobject-2.0", "pango-1.0", "gdk_pixbuf-2.0", "fontconfig")}
+    info["find_library_avant"] = {n: ctypes.util.find_library(n)
+                                  for n in ("gobject-2.0", "libgobject-2.0-0", "pango-1.0")}
+    # applique le patch puis re-teste (auto-test du correctif)
+    try:
+        from palladio_render import _ensure_find_library
+        _ensure_find_library()
+        info["find_library_apres"] = {n: ctypes.util.find_library(n)
+                                      for n in ("gobject-2.0", "libgobject-2.0-0", "pango-1.0")}
+    except Exception as e:
+        info["patch"] = f"ERR {e}"
     found = []
     for pat in ("/usr/lib/x86_64-linux-gnu/libgobject-2.0.so*",
                 "/usr/lib/*/libgobject-2.0.so*", "/lib/**/libgobject-2.0.so*",
