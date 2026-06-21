@@ -58,9 +58,24 @@ def test_alignement_ignore_voisin_arriere():
     ra, info = alignment_band_ra(P1, P2, [arriere, bon], CENTROID, fallback_m=6.0)
     assert approx(ra, 5.0), (ra, info)
     assert info["n_voisins_utiles"] == 1
+    assert info["cote_droite_m"] == 5.0 and info["cote_gauche_m"] is None
     print("OK alignement ignore voisin cote rue -> 5.0")
+
+def test_alignement_voisin_immediat_pas_mediane():
+    # Cote droit : un voisin IMMEDIAT (front 5, proche du bord L=10) + un batiment
+    # plus loin dans la rue mais dans la fenetre (front 9). L'ancienne mediane
+    # aurait donne 7 ; on doit retenir le voisin immediat -> 5.0.
+    adj = Polygon([(11, 5), (16, 5), (16, 10), (11, 10)])   # pc~13.5, front 5
+    loin = Polygon([(17, 9), (21, 9), (21, 14), (17, 14)])  # pc~19, front 9
+    ra, info = alignment_band_ra(P1, P2, [loin, adj], CENTROID, fallback_m=6.0)
+    assert approx(ra, 5.0), (ra, info)
+    assert info["n_voisins_utiles"] == 1 and info["cote_droite_m"] == 5.0
+    assert info["fronts_m"] == [5.0, 9.0]          # les deux sont bien "vus"
+    assert info["fronts_adjacent_m"] == [5.0]      # mais un seul retenu
+    print("OK alignement voisin immediat (pas mediane) -> 5.0", info["fronts_m"])
 
 if __name__ == "__main__":
     test_fixe(); test_lie_hauteur(); test_alignement_deux_voisins()
     test_alignement_fallback(); test_alignement_ignore_voisin_arriere()
+    test_alignement_voisin_immediat_pas_mediane()
     print("\nTOUS LES TESTS PASSENT.")

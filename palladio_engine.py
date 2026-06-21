@@ -935,16 +935,22 @@ def alignment_band_ra(p1: List[float], p2: List[float],
         [-W, L+W]) -> exclut les batiments d'en face / plus loin dans la rue,
       - a une distance plausible d'un recul avant (<= ALIGN_DIST_CAP_M) -> exclut
         les batiments de fond de parcelle traversante.
-    Recul = MEDIANE des facades retenues (robuste aux aberrants, contrairement a la
-    moyenne qui se faisait tirer par des batiments lointains). Aucun voisin retenu
-    -> fallback chiffre.
+
+    Selection (v0.2) : on classe chaque batiment retenu par cote (gauche / droite /
+    en face de la frontage) puis on ne garde que le VOISIN IMMEDIAT de chaque cote
+    (le plus proche lateralement du bord de parcelle). Le recul = MOYENNE des fronts
+    adjacents (gauche+droite). Plus fidele a la regle "alignement sur les voisins"
+    que l'ancienne mediane de TOUS les batiments de la fenetre, qui se faisait tirer
+    par les garages / 2e rang / batiments d'angle. Aucun adjacent -> fallback chiffre.
 
     Pur geometrique (LUREF), testable hors reseau.
     """
     ALIGN_DIST_CAP_M = 15.0       # un recul avant reel ne depasse pas ~15 m
     ALIGN_LATERAL_WINDOW_M = 12.0  # tolerance laterale autour de la frontage
     info: Dict[str, Any] = {"methode": "alignement_voisins", "n_voisins_utiles": 0,
-                            "fronts_m": [], "fallback_m": fallback_m, "fallback_used": False}
+                            "fronts_m": [], "fronts_adjacent_m": [],
+                            "cote_gauche_m": None, "cote_droite_m": None,
+                            "fallback_m": fallback_m, "fallback_used": False}
     n = _edge_inward_unit_normal(p1, p2, centroid)
     if n is None:
         info["fallback_used"] = True
@@ -955,7 +961,11 @@ def alignment_band_ra(p1: List[float], p2: List[float],
     L = math.hypot(dx, dy)
     ux, uy = (dx / L, dy / L) if L > 1e-9 else (0.0, 0.0)
 
-    fronts: List[float] = []
+    # Candidats retenus : (front_m, position_laterale_pc, cote)
+    gauche: List[Tuple[float, float]] = []   # (pc, front)  pc <= 0
+    droite: List[Tuple[float, float]] = []   # (pc, front)  pc >= L
+    en_face: List[Tuple[float, float]] = []  # (pc, front)  0 < pc < L
+    all_fronts: List[float] = []
     for poly in neighbor_polys_luref or []:
         if poly is None or poly.is_empty:
             continue
@@ -971,17 +981,40 @@ def alignment_band_ra(p1: List[float], p2: List[float],
         front = min(pos)                     # facade la plus proche de la rue
         if front > ALIGN_DIST_CAP_M:         # trop loin pour etre un recul avant
             continue
-        fronts.append(front)
+        pc = sum(proj) / len(proj)           # position laterale (centre du batiment)
+        all_fronts.append(front)
+        if pc <= 0:
+            gauche.append((pc, front))
+        elif pc >= L:
+            droite.append((pc, front))
+        else:
+            en_face.append((pc, front))
 
-    if not fronts:
+    # Voisin immediat de chaque cote : gauche = pc le plus grand (proche du bord 0),
+    # droite = pc le plus petit (proche du bord L).
+    adjacents: List[float] = []
+    if gauche:
+        fg = max(gauche, key=lambda t: t[0])[1]
+        info["cote_gauche_m"] = round(fg, 2)
+        adjacents.append(fg)
+    if droite:
+        fd = min(droite, key=lambda t: t[0])[1]
+        info["cote_droite_m"] = round(fd, 2)
+        adjacents.append(fd)
+    # Aucun voisin lateral mais un batiment directement en face -> on l'utilise.
+    if not adjacents and en_face:
+        adjacents.append(min(f for _, f in en_face))
+
+    if not adjacents:
         info["fallback_used"] = True
+        info["fronts_m"] = [round(f, 2) for f in sorted(all_fronts)]
         return fallback_m, info
-    s = sorted(fronts)
-    m = len(s)
-    ra = s[m // 2] if m % 2 else (s[m // 2 - 1] + s[m // 2]) / 2.0
-    info["n_voisins_utiles"] = m
-    info["fronts_m"] = [round(f, 2) for f in s]
-    info["recul_median_m"] = round(ra, 2)
+
+    ra = sum(adjacents) / len(adjacents)
+    info["n_voisins_utiles"] = len(adjacents)
+    info["fronts_m"] = [round(f, 2) for f in sorted(all_fronts)]
+    info["fronts_adjacent_m"] = [round(f, 2) for f in adjacents]
+    info["recul_align_m"] = round(ra, 2)
     return ra, info
 
 
