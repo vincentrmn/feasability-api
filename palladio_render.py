@@ -806,11 +806,13 @@ def _ensure_find_library() -> None:
 
     ctypes.util.find_library = _fl
 
-    # Precharge la pile native (deps de WeasyPrint) en RTLD_GLOBAL.
+    # Precharge la pile native (deps de WeasyPrint) en RTLD_GLOBAL. Inclut la
+    # chaine de libgio (mount->blkid/selinux->uuid) requise par libpango.
     sonames = ["pcre2-8", "ffi", "z", "bz2", "png16", "expat", "graphite2",
-               "brotlicommon", "brotlidec", "freetype", "fribidi", "pixman-1",
-               "harfbuzz", "fontconfig", "glib-2.0", "gmodule-2.0", "gobject-2.0",
-               "gio-2.0", "gdk_pixbuf-2.0", "cairo", "cairo-gobject",
+               "brotlicommon", "brotlidec", "uuid", "selinux", "blkid", "mount",
+               "freetype", "fribidi", "pixman-1", "harfbuzz", "fontconfig",
+               "glib-2.0", "gmodule-2.0", "gobject-2.0", "gio-2.0",
+               "gdk_pixbuf-2.0", "cairo", "cairo-gobject",
                "pango-1.0", "pangoft2-1.0", "pangocairo-1.0"]
     paths = [p for p in (_locate(s) for s in sonames) if p]
     remaining = list(paths)
