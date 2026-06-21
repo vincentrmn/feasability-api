@@ -73,6 +73,12 @@ PUBLIC_NATURES = {5038, 5043}
 # Distance de sondage perpendiculaire a chaque arete (metres LUREF)
 PROBE_DISTANCE_M = 3.0
 
+# Longueur min d'une arete pour etre une vraie facade rue. En dessous, c'est un
+# micro-redent / artefact de digitalisation cadastrale : son sondage tombe souvent
+# dans le vide (donc classe "voirie" a tort) mais ce n'est jamais une vraie facade.
+# On les ecarte de la SELECTION (pas de la detection). Cf. cas 11 rue du Cimetiere.
+MIN_VOIRIE_EDGE_M = 1.5
+
 # Marge bbox pour la requete Geoportail collection 359 (en degres WGS84)
 # ~ 0.001 deg = environ 75 m a 49 deg N en longitude, 110 m en latitude
 BBOX_MARGIN_DEG = 0.001
@@ -555,23 +561,34 @@ def select_voirie_edge_from_classification(edges_classified: List[Dict[str, Any]
                 best_d, best_idx = d, e["idx"]
         return {"selected_idx": best_idx, "all_voirie_edges": [], "fallback_used": fallback_used}
 
-    if len(voirie_edges) == 1:
+    all_idx = [e["idx"] for e in voirie_edges]
+
+    # Ecarter les micro-aretes (redents cadastraux < seuil) : jamais de vraies
+    # facades. Si TOUTES les aretes voirie sont courtes (parcelle minuscule), on
+    # garde l'ensemble pour ne pas se retrouver sans candidat.
+    substantial = [e for e in voirie_edges if e.get("length_m", 0) >= MIN_VOIRIE_EDGE_M]
+    candidates = substantial if substantial else voirie_edges
+    micro_ignores = [e["idx"] for e in voirie_edges if e not in candidates]
+
+    if len(candidates) == 1:
         return {
-            "selected_idx": voirie_edges[0]["idx"],
-            "all_voirie_edges": [e["idx"] for e in voirie_edges],
+            "selected_idx": candidates[0]["idx"],
+            "all_voirie_edges": all_idx,
+            "micro_ignores": micro_ignores,
             "fallback_used": None,
         }
 
     if point_geocode_luref is not None:
-        best = min(voirie_edges, key=lambda e: math.hypot(
+        best = min(candidates, key=lambda e: math.hypot(
             e["mid"][0] - point_geocode_luref[0],
             e["mid"][1] - point_geocode_luref[1]))
     else:
-        best = max(voirie_edges, key=lambda e: e["length_m"])
+        best = max(candidates, key=lambda e: e["length_m"])
 
     return {
         "selected_idx": best["idx"],
-        "all_voirie_edges": [e["idx"] for e in voirie_edges],
+        "all_voirie_edges": all_idx,
+        "micro_ignores": micro_ignores,
         "fallback_used": None,
     }
 
@@ -1216,7 +1233,7 @@ def calculer_emprise_palladio(
     return {
         "meta": {
             "engine": "palladio",
-            "version": "0.3.1",
+            "version": "0.3.2",
             "method": "shapely_buffer_halfplanes_v5_cadastral_voirie_merged_faces",
         },
         "parcelle": {
@@ -1851,7 +1868,7 @@ def calculer_palladio_full(
             parcelle_nb_sommets=nb_sommets, type_construction={"type": "indetermine"},
             zone_pag=zone_pag, enveloppe_vide=True)
         return {
-            "meta": {"engine": "palladio", "version": "0.3.1", "method": "full",
+            "meta": {"engine": "palladio", "version": "0.3.2", "method": "full",
                      "enveloppe_vide": True, "error": base_error},
             "parcelle": {"nb_sommets": nb_sommets, "id": parcelle_id},
             "scb": None, "logements": None, "parkings": None,
@@ -2039,7 +2056,7 @@ def calculer_palladio_full(
     return {
         "meta": {
             "engine": "palladio",
-            "version": "0.3.1",
+            "version": "0.3.2",
             "method": "full",
             "enveloppe_vide": False,
             "hab1_corrige": corriger_hab1,
