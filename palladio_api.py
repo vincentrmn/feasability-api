@@ -131,33 +131,6 @@ def calcul_palladio_full_html(req: PalladioFullRequest):
     return HTMLResponse(content=render_palladio_html(resp, req.adresse or "", req.contexte))
 
 
-@router.get("/palladio/pdf/diag")
-def palladio_pdf_diag():
-    """Diagnostic du rendu PDF (quel OS/build est live, libs trouvees). Temporaire."""
-    import platform, os, ctypes.util
-    info: Dict[str, Any] = {
-        "platform": platform.platform(),
-        "ld_library_path": os.environ.get("LD_LIBRARY_PATH", ""),
-        "find_library": {n: ctypes.util.find_library(n)
-                         for n in ("gobject-2.0", "pango-1.0", "pangoft2-1.0",
-                                   "fontconfig", "harfbuzz", "cairo")},
-    }
-    try:
-        with open("/etc/os-release") as f:
-            for line in f:
-                if line.startswith("PRETTY_NAME"):
-                    info["os"] = line.split("=", 1)[1].strip().strip('"')
-                    break
-    except Exception as e:
-        info["os"] = f"?({e})"
-    try:
-        import weasyprint
-        info["weasyprint"] = getattr(weasyprint, "__version__", "imported")
-    except Exception as e:
-        info["weasyprint"] = f"IMPORT_ERR {type(e).__name__}: {e}"
-    return info
-
-
 @router.post("/palladio/render/pdf")
 def palladio_render_pdf(payload: str = Form(...)):
     """Genere le PDF de l'etude cote serveur et le renvoie en telechargement.
