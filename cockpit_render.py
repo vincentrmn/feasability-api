@@ -25,6 +25,11 @@ import html as _h
 
 CALCUL_URL = "https://n8n-production-8929d.up.railway.app/webhook/palladio/calcul"
 
+# Endpoint d'autocomplete d'adresse (API Railway, CORS *). Le selecteur tape ici
+# pour proposer les adresses officielles + cle cadastrale, et router la BONNE
+# parcelle vers le calcul (fini le "results[0]" en aveugle).
+SEARCH_URL = "https://web-production-afd8d.up.railway.app/palladio/search"
+
 # Propositions d'adresses (tests rapides), comme l'ancien formulaire.
 SHORTCUTS = [
     "5 rue des Tilleuls, Strassen",
@@ -246,10 +251,19 @@ def render_landing_html(
         # --- formulaire (outil interne, pas de marketing) ---
         '<section class="hero">'
         '<label class="search-label" for="addr">Adresse au Luxembourg</label>'
-        f'<form class="search" action="{_esc(calcul_url)}" method="get">'
-        f'<input id="addr" type="text" name="address" placeholder="{_esc(placeholder)}" autocomplete="off" required>'
+        f'<form class="search" id="searchForm" action="{_esc(calcul_url)}" method="get" autocomplete="off">'
+        '<div class="search-field">'
+        f'<input id="addr" type="text" name="address" placeholder="{_esc(placeholder)}" '
+        'autocomplete="off" required role="combobox" aria-autocomplete="list" '
+        'aria-expanded="false" aria-controls="ac-list">'
+        '<input type="hidden" name="parcel_key" id="addr_pk">'
+        '<input type="hidden" name="lon" id="addr_lon">'
+        '<input type="hidden" name="lat" id="addr_lat">'
+        '<ul id="ac-list" class="ac-list" role="listbox" hidden></ul>'
+        '</div>'
         '<button type="submit">Analyser</button>'
         '</form>'
+        '<p class="search-hint">Choisis une adresse officielle dans la liste pour cibler la bonne parcelle.</p>'
         f'{_shortcuts_html(calcul_url)}'
         '</section>'
         # --- cockpit ---
@@ -273,7 +287,52 @@ def render_landing_html(
         '</section>'
         '</main>'
         '<footer>Palladio · Terravalu · données cadastrales geoportail.lu · règles Airtable</footer>'
+        f'<script>{_autocomplete_js()}</script>'
         '</body></html>'
+    )
+
+
+def _autocomplete_js() -> str:
+    """Selecteur d'adresse : autocomplete vanilla qui interroge /palladio/search,
+    propose les adresses officielles et injecte le parcel_key choisi dans le
+    formulaire (GET vers le calcul). Degradation gracieuse : sans JS, le champ
+    texte simple part vers le calcul comme avant (n8n retombe sur results[0])."""
+    return (
+        "(function(){"
+        f"var SEARCH={SEARCH_URL!r};"
+        "var inp=document.getElementById('addr'),pk=document.getElementById('addr_pk'),"
+        "lon=document.getElementById('addr_lon'),lat=document.getElementById('addr_lat'),"
+        "list=document.getElementById('ac-list'),form=document.getElementById('searchForm');"
+        "if(!inp||!list||!form)return;"
+        "var items=[],active=-1,t=null,lastQ='';"
+        "function clearPk(){pk.value='';lon.value='';lat.value='';}"
+        "function hide(){list.hidden=true;list.innerHTML='';items=[];active=-1;inp.setAttribute('aria-expanded','false');}"
+        "function pick(it){inp.value=it.label||'';pk.value=it.parcel_key||'';"
+        "lon.value=(it.lon!=null?it.lon:'');lat.value=(it.lat!=null?it.lat:'');hide();form.submit();}"
+        "function render(){if(!items.length){hide();return;}"
+        "list.innerHTML='';items.forEach(function(it,i){"
+        "var li=document.createElement('li');li.className='ac-item'+(i===active?' on':'');"
+        "li.setAttribute('role','option');"
+        "var m=document.createElement('span');m.className='ac-main';m.textContent=it.label||'';"
+        "var s=document.createElement('span');s.className='ac-sub';"
+        "var sub=[it.parcel_label,((it.zip||'')+' '+(it.commune||'')).trim()].filter(Boolean).join(' \\u00b7 ');"
+        "s.textContent=sub;li.appendChild(m);li.appendChild(s);"
+        "li.addEventListener('mousedown',function(e){e.preventDefault();pick(it);});"
+        "list.appendChild(li);});"
+        "list.hidden=false;inp.setAttribute('aria-expanded','true');}"
+        "function query(){var q=inp.value.trim();if(q.length<3){hide();return;}"
+        "if(q===lastQ)return;lastQ=q;"
+        "fetch(SEARCH+'?q='+encodeURIComponent(q)).then(function(r){return r.json();})"
+        ".then(function(d){if(inp.value.trim()!==q)return;items=(d&&d.results)||[];active=-1;render();})"
+        ".catch(function(){hide();});}"
+        "inp.addEventListener('input',function(){clearPk();clearTimeout(t);t=setTimeout(query,250);});"
+        "inp.addEventListener('keydown',function(e){if(list.hidden)return;"
+        "if(e.key==='ArrowDown'){e.preventDefault();active=Math.min(active+1,items.length-1);render();}"
+        "else if(e.key==='ArrowUp'){e.preventDefault();active=Math.max(active-1,0);render();}"
+        "else if(e.key==='Enter'){if(active>=0){e.preventDefault();pick(items[active]);}}"
+        "else if(e.key==='Escape'){hide();}});"
+        "document.addEventListener('click',function(e){if(!list.contains(e.target)&&e.target!==inp)hide();});"
+        "})();"
     )
 
 
@@ -287,11 +346,18 @@ def _styles() -> str:
         "main{max-width:880px;margin:0 auto;padding:0 20px}"
         ".hero{padding:28px 0 24px;border-bottom:1px solid var(--line)}"
         ".search-label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px}"
-        ".search{display:flex;gap:10px;max-width:620px}"
-        ".search input{flex:1;font-size:15px;padding:13px 15px;border:1px solid #ccc;border-radius:11px;outline:none}"
+        ".search{display:flex;gap:10px;max-width:620px;align-items:flex-start}"
+        ".search-field{position:relative;flex:1}"
+        ".search input{width:100%;font-size:15px;padding:13px 15px;border:1px solid #ccc;border-radius:11px;outline:none}"
         ".search input:focus{border-color:var(--ink);box-shadow:0 0 0 3px rgba(17,17,17,.08)}"
         ".search button{font-size:15px;font-weight:600;color:#fff;background:var(--ink);border:0;border-radius:11px;padding:13px 22px;cursor:pointer}"
         ".search button:hover{background:#000}"
+        ".search-hint{font-size:12px;color:var(--muted);margin:8px 2px 0;max-width:620px}"
+        ".ac-list{position:absolute;z-index:30;left:0;right:0;top:calc(100% + 6px);margin:0;padding:6px;list-style:none;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.12);max-height:340px;overflow:auto}"
+        ".ac-item{display:flex;flex-direction:column;gap:2px;padding:9px 11px;border-radius:8px;cursor:pointer}"
+        ".ac-item:hover,.ac-item.on{background:var(--soft)}"
+        ".ac-main{font-size:14px;color:var(--ink)}"
+        ".ac-sub{font-size:12px;color:var(--muted)}"
         ".shortcuts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}"
         ".sc-label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-right:2px}"
         ".chip{font-size:13px;color:var(--ink);text-decoration:none;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:6px 12px}"

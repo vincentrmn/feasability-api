@@ -10,7 +10,9 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
 
-from palladio_engine import calculer_emprise_palladio, calculer_palladio_full, PalladioError
+from palladio_engine import (
+    calculer_emprise_palladio, calculer_palladio_full, geocode_search, PalladioError,
+)
 from palladio_render import render_palladio_html
 from cockpit_render import compute_communes_status, render_landing_html
 from airtable_landing import fetch_landing_data
@@ -125,6 +127,17 @@ def calcul_palladio_full_html(req: PalladioFullRequest):
     """Idem /full mais renvoie la page HTML (renderer palladio_render)."""
     resp = _full(req)
     return HTMLResponse(content=render_palladio_html(resp, req.adresse or "", req.contexte))
+
+
+@router.get("/palladio/search")
+def palladio_search(q: str = ""):
+    """Autocomplete d'adresse officielle (geocodeur Geoportail).
+
+    Renvoie les candidats avec leur cle cadastrale pour que la page d'accueil
+    laisse l'utilisateur CHOISIR la bonne adresse/parcelle, au lieu de prendre
+    aveuglement le 1er resultat (cause des erreurs de parcelle en drapeau).
+    Jamais de 500 : requete vide ou geoportail injoignable -> results vide."""
+    return {"query": q, "results": geocode_search(q)}
 
 
 @router.get("/palladio/landing/html", response_class=HTMLResponse)
