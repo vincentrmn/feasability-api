@@ -1,5 +1,5 @@
 [phases.setup]
-# python311 (fournit aussi libstdc++ pour shapely) + wkhtmltopdf (binaire sur le
-# PATH, utilise pour le rendu PDF cote serveur : pas de find_library, compatible
-# Nixpacks) + fontconfig/police pour le texte du PDF.
-nixPkgs = ["python311", "wkhtmltopdf", "fontconfig", "dejavu_fonts"]
+# python311 (libstdc++ pour shapely) + wkhtmltopdf (assemblage PDF texte+images) +
+# librsvg (rsvg-convert : rasterise les schemas SVG en PNG, le wkhtmltopdf de Nix
+# rendant mal le SVG inline) + fontconfig/police pour le texte.
+nixPkgs = ["python311", "wkhtmltopdf", "librsvg", "fontconfig", "dejavu_fonts"]

@@ -707,26 +707,50 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             f'{_DECLUTTER_JS}</body></html>')
 
 
+def _svgs_to_images(html: str) -> str:
+    """Pre-rasterise chaque schema SVG en PNG (rsvg-convert) embarque en <img>.
+    Raison : le wkhtmltopdf de Nix rend mal le SVG inline (schemas vides dans le
+    PDF), alors qu'il rend parfaitement texte + <img>. rsvg-convert (binaire
+    librsvg, pas de find_library) est deterministe. On injecte le <style> SVG
+    avant rasterisation (rsvg n'a pas le CSS du <head>). Schema non convertible
+    -> on garde le SVG (degradation gracieuse)."""
+    import base64
+    import subprocess
+
+    def repl(m):
+        svg = m.group(0)
+        svg2 = svg.replace('class="schema-svg">', 'class="schema-svg">' + _SVG_STYLE, 1)
+        try:
+            p = subprocess.run(["rsvg-convert", "-w", "1000", "-b", "white"],
+                               input=svg2.encode("utf-8"), capture_output=True, timeout=20)
+        except Exception:
+            return svg
+        if p.returncode != 0 or p.stdout[:4] != b"\x89PNG":
+            return svg
+        b64 = base64.b64encode(p.stdout).decode("ascii")
+        return f'<img class="schema-svg" style="width:100%;height:auto" src="data:image/png;base64,{b64}">'
+
+    return re.sub(r'<svg\b[^>]*class="schema-svg".*?</svg>', repl, html, flags=re.S)
+
+
 def render_palladio_pdf(response: Dict[str, Any], adresse: str = "",
                         contexte: Optional[Dict[str, Any]] = None) -> Tuple[bytes, str]:
-    """Genere le PDF de l'etude cote serveur via wkhtmltopdf (moteur WebKit appele
-    en sous-process). Choisi pour Nixpacks : un binaire sur le PATH, pas de
-    chargement de lib par ctypes (ce qui plantait WeasyPrint sous Nix). WebKit
-    applique le CSS du <head> au SVG et execute le JS de mise en page des schemas
-    -> le PDF reflete l'ecran. On rend en media 'print' (masque la barre d'actions).
-    Retourne (pdf_bytes, filename)."""
+    """Genere le PDF de l'etude cote serveur (compatible Nixpacks, sans find_library).
+    Pipeline : page HTML -> schemas SVG rasterises en PNG (rsvg-convert) -> assemblage
+    texte+images par wkhtmltopdf (moteur WebKit, binaire). Rendu en media 'print'
+    (la barre d'actions est masquee). Retourne (pdf_bytes, filename)."""
     import subprocess
     import os
     html = render_palladio_html(response, adresse, contexte)
     # police distante retiree : rendu sans dependance reseau (police systeme).
     html = re.sub(r'<link[^>]*fonts\.googleapis[^>]*>', '', html)
+    html = _svgs_to_images(html)
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", XDG_RUNTIME_DIR="/tmp")
-    cmd = ["wkhtmltopdf", "--print-media-type", "--enable-javascript",
-           "--javascript-delay", "500", "--enable-local-file-access",
+    cmd = ["wkhtmltopdf", "--print-media-type", "--enable-local-file-access",
            "--encoding", "utf-8", "--quiet", "-", "-"]
     try:
         proc = subprocess.run(cmd, input=html.encode("utf-8"),
-                              capture_output=True, env=env, timeout=45)
+                              capture_output=True, env=env, timeout=60)
     except FileNotFoundError as e:
         raise ImportError(f"wkhtmltopdf introuvable sur le PATH : {e}")
     pdf = proc.stdout or b""
