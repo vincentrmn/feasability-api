@@ -709,18 +709,30 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
 
 def render_palladio_pdf(response: Dict[str, Any], adresse: str = "",
                         contexte: Optional[Dict[str, Any]] = None) -> Tuple[bytes, str]:
-    """Genere le PDF de l'etude cote serveur (WeasyPrint), a partir de la MEME page
-    HTML que l'ecran. Deux ajustements pour le moteur PDF :
-      - on injecte le <style> SVG dans chaque schema (WeasyPrint n'applique pas les
-        classes CSS du <head> aux elements SVG) ;
-      - on retire la police distante (rendu sans reseau, police systeme).
-    Import WeasyPrint differe : l'API demarre meme si la lib/les libs systeme
-    manquent. Retourne (pdf_bytes, filename)."""
-    from weasyprint import HTML  # import differe (libs systeme requises)
+    """Genere le PDF de l'etude cote serveur via wkhtmltopdf (moteur WebKit appele
+    en sous-process). Choisi pour Nixpacks : un binaire sur le PATH, pas de
+    chargement de lib par ctypes (ce qui plantait WeasyPrint sous Nix). WebKit
+    applique le CSS du <head> au SVG et execute le JS de mise en page des schemas
+    -> le PDF reflete l'ecran. On rend en media 'print' (masque la barre d'actions).
+    Retourne (pdf_bytes, filename)."""
+    import subprocess
+    import os
     html = render_palladio_html(response, adresse, contexte)
-    html = html.replace('class="schema-svg">', 'class="schema-svg">' + _SVG_STYLE)
+    # police distante retiree : rendu sans dependance reseau (police systeme).
     html = re.sub(r'<link[^>]*fonts\.googleapis[^>]*>', '', html)
-    pdf = HTML(string=html, base_url=API_BASE).write_pdf()
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", XDG_RUNTIME_DIR="/tmp")
+    cmd = ["wkhtmltopdf", "--print-media-type", "--enable-javascript",
+           "--javascript-delay", "500", "--enable-local-file-access",
+           "--encoding", "utf-8", "--quiet", "-", "-"]
+    try:
+        proc = subprocess.run(cmd, input=html.encode("utf-8"),
+                              capture_output=True, env=env, timeout=45)
+    except FileNotFoundError as e:
+        raise ImportError(f"wkhtmltopdf introuvable sur le PATH : {e}")
+    pdf = proc.stdout or b""
+    if pdf[:4] != b"%PDF":
+        err = (proc.stderr or b"").decode("utf-8", "ignore")[-400:]
+        raise RuntimeError(f"wkhtmltopdf code={proc.returncode} {err}")
     parcelle = (response or {}).get("parcelle") or {}
     ctx = contexte or {}
     fname = _pdf_filename(adresse, ctx.get("parcel_label") or parcelle.get("id") or "")

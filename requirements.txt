@@ -5,4 +5,3 @@ pyproj==3.7.0
 shapely>=2.0,<3.0
 requests>=2.31,<3
 python-multipart>=0.0.7
-weasyprint==69.0
