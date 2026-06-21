@@ -18,8 +18,13 @@ Hauteur_corniche_max_m, Hauteur_faite_max_m, DL_max_log_ha} }. Tout est optionne
 """
 from typing import Dict, Any, List, Tuple, Optional
 import math
+import re
 import html as _h
 from datetime import datetime
+
+# Génération PDF côté navigateur : capture le rendu écran (après le JS de mise en
+# page des schémas) et télécharge un vrai fichier .pdf, sans boîte d'impression.
+_HTML2PDF_CDN = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.2/html2pdf.bundle.min.js"
 
 
 def _now_stamp() -> str:
@@ -31,6 +36,28 @@ def _now_stamp() -> str:
     except Exception:
         now = datetime.now()
     return now.strftime("%d/%m/%Y à %H:%M")
+
+
+def _pdf_js(filename: str) -> str:
+    """Bouton "Télécharger en PDF" : html2pdf capture .wrap (le contenu, hors barre
+    d'actions) APRES le rendu/JS des schemas et telecharge un vrai .pdf. Fallback
+    sur l'impression navigateur si la lib CDN n'a pas charge."""
+    fn = filename.replace("'", "")
+    return (
+        "<script>function palladioPdf(){"
+        "var el=document.querySelector('.wrap');"
+        "if(!el||typeof html2pdf==='undefined'){window.print();return;}"
+        "var b=document.querySelector('.btn-pdf');"
+        "if(b){b.disabled=true;b.dataset.t=b.textContent;b.textContent='Génération…';}"
+        "function done(){if(b){b.disabled=false;b.textContent=b.dataset.t||'Télécharger en PDF';}}"
+        "var opt={margin:[8,8,10,8],filename:'" + fn + "',"
+        "image:{type:'jpeg',quality:0.96},"
+        "html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff',windowWidth:el.scrollWidth},"
+        "jsPDF:{unit:'mm',format:'a4',orientation:'portrait'},"
+        "pagebreak:{mode:['css','legacy'],avoid:['.section','.schema','.hero']}};"
+        "html2pdf().set(opt).from(el).save().then(done).catch(function(){done();window.print();});"
+        "}</script>"
+    )
 
 
 FORM_URL = "https://n8n-production-8929d.up.railway.app/webhook/palladio"
@@ -644,6 +671,8 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
                if lg else "")
     stamp = _now_stamp()
     ver = _esc(meta.get("version") or "")
+    _slug = re.sub(r"[^a-zA-Z0-9]+", "_", (adresse or parcel_label or "etude")).strip("_").lower()[:50] or "etude"
+    pdf_name = f"palladio_{_slug}.pdf"
     hero = (f'<div class="hero"><h1>{_esc(adresse)}</h1>'
             f'<div class="addr">Parcelle {_esc(parcel_label)} · zone {_esc(code_zone)}{(" · " + _esc(nomZone)) if nomZone else ""}</div>'
             f'<div class="gen">Étude générée le {stamp} · Palladio {ver}</div>'
@@ -656,7 +685,7 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             f'{kpi_log}</div></div>')
     topbar = (f'<div class="topbar"><span class="brand">Palladio</span>'
               f'<span class="topbar-actions">'
-              f'<button type="button" class="btn-pdf" onclick="window.print()">Exporter en PDF</button>'
+              f'<button type="button" class="btn-pdf" onclick="palladioPdf()">Télécharger en PDF</button>'
               f'<a class="btn-home" href="{FORM_URL}">← Nouvelle recherche</a></span></div>')
     return (f'<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Palladio · {_esc(adresse)}</title>'
@@ -665,6 +694,8 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             f'<a class="btn-home btn-home-bottom" href="{FORM_URL}">← Nouvelle recherche</a>'
             f'<footer class="footer"><span>Palladio engine {ver}</span>'
             f'<span>Étude générée le {stamp}</span></footer></div>'
+            f'<script src="{_HTML2PDF_CDN}"></script>'
+            f'{_pdf_js(pdf_name)}'
             f'{_DECLUTTER_JS}</body></html>')
 
 
