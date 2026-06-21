@@ -763,15 +763,48 @@ def _pdf_font_face_css() -> str:
     return _PDF_FONT_CSS
 
 
+_FIND_LIB_PATCHED = False
+
+
+def _ensure_find_library() -> None:
+    """Sous Nixpacks, le Python de Nix a un `ctypes.util.find_library` qui ne
+    resout PAS les libs installees par apt (verifie : libgobject est present dans
+    /usr/lib et liste par ldconfig, mais find_library renvoie None) -> WeasyPrint
+    plante a l'import. On ajoute un fallback : si find_library renvoie None, on
+    cherche le fichier dans les repertoires systeme standards et on renvoie son
+    chemin (cffi/ctypes savent charger un chemin complet). Idempotent."""
+    global _FIND_LIB_PATCHED
+    if _FIND_LIB_PATCHED:
+        return
+    import ctypes.util
+    import glob
+    import os
+    _orig = ctypes.util.find_library
+    _dirs = ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib", "/lib")
+
+    def _fl(name):
+        found = _orig(name)
+        if found:
+            return found
+        for d in _dirs:
+            hits = sorted(glob.glob(os.path.join(d, "lib%s.so*" % name)))
+            if hits:
+                return hits[-1]
+        return None
+
+    ctypes.util.find_library = _fl
+    _FIND_LIB_PATCHED = True
+
+
 def render_palladio_pdf(response: Dict[str, Any], adresse: str = "",
                         contexte: Optional[Dict[str, Any]] = None) -> Tuple[bytes, str]:
     """Genere le PDF de l'etude cote serveur avec WeasyPrint (moteur moderne :
-    CSS grid/flex, SVG, @font-face). Compatible Nixpacks car les libs systeme
-    (pango/glib/...) sont installees par apt (aptPkgs) aux chemins standards ->
-    ctypes.util.find_library les trouve. Ajustements : police distante retiree +
-    fonte EMBARQUEE (@font-face 'Inter'), et <style> SVG injecte dans chaque
-    schema (WeasyPrint n'applique pas les classes du <head> aux elements SVG).
+    CSS grid/flex, SVG, @font-face). Compatible Nixpacks : libs systeme via apt
+    (aptPkgs) + patch find_library (cf. _ensure_find_library) pour les resoudre.
+    Ajustements : police distante retiree + fonte EMBARQUEE (@font-face 'Inter'),
+    et schemas SVG rasterises en PNG via rsvg (WeasyPrint rend mal le texte SVG).
     Import differe : l'API demarre meme si la lib manque. Retourne (pdf, filename)."""
+    _ensure_find_library()       # AVANT l'import : find_library doit voir les libs apt
     from weasyprint import HTML  # import differe (libs systeme requises)
     html = render_palladio_html(response, adresse, contexte)
     html = re.sub(r'<link[^>]*fonts\.googleapis[^>]*>', '', html)
