@@ -493,17 +493,17 @@ def geocode_search(query: str,
     out: List[Dict[str, Any]] = []
     for res in data["results"]:
         parcel = res.get("parcel") or {}
-        key = parcel.get("key")
-        if not key:
-            continue  # sans cle cadastrale, le moteur ne peut pas calculer
+        key = parcel.get("key")   # peut etre None tant que l'adresse n'a pas de numero
         geom = res.get("geomlonlat") or {}
         coords = geom.get("coordinates") or [None, None]
         ad = res.get("AddressDetails") or {}
-        label = (res.get("address") or "").strip()
+        label = (res.get("address") or "").strip().lstrip(",").strip()
         if not label:
             street = " ".join(p for p in (ad.get("street"), ad.get("postnumber")) if p)
             loc = " ".join(p for p in (ad.get("zip"), ad.get("locality")) if p)
             label = ", ".join(p for p in (street.strip(), loc.strip()) if p)
+        if not label:
+            continue   # rien d'affichable
         out.append({
             "label": label,
             "parcel_key": key,
