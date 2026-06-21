@@ -24,9 +24,10 @@ Session « scrap brief » (branche `claude/palladio-scrap-brief-6tpu5p`, mergée
   - Tampon date/heure (Europe/Luxembourg) + version Palladio dans le hero + footer.
 - **Sélecteur d'adresse : ABANDONNÉ / reverté.** Tentative d'autocomplete sur la page d'accueil
   (`/palladio/search` + JS). Vincent n'en a pas voulu → page d'accueil revenue au **champ texte
-  simple**. ⚠️ Le code mort restant : endpoint `GET /palladio/search` (+ `geocode_search` dans
-  `palladio_engine.py`) et le patch n8n `parcel_key` dans `Extract Geocoded` (rétro-compatible,
-  inerte). À retirer un jour si on n'y revient pas.
+  simple**. ✅ **Code mort retiré (2026-06-21)** : endpoint `GET /palladio/search`, `geocode_search`
+  + constantes `GEOPORTAIL_GEOCODE_URL`/`GEOCODE_HTTP_TIMEOUT_S` (`palladio_engine.py`) supprimés.
+  Reste **uniquement** le patch n8n `parcel_key` dans `Extract Geocoded` (rétro-compatible, inerte) —
+  pas exporté dans le repo, à nettoyer côté workflow le jour où on y touche.
 - **Alignement voisins v0.2 (FAIT).** `alignment_band_ra` ne prend plus la médiane de tous les
   bâtiments mais **les voisins immédiats gauche/droite** (moyenne). Sortie enrichie
   (`cote_gauche_m`, `cote_droite_m`, `fronts_adjacent_m`, `voisins[]` avec géométrie). **Schéma
@@ -602,9 +603,9 @@ technique : ce qui suit est priorisé par valeur produit (cf. §2 — le B2C ali
   attention au géocodeur qui renvoie des résultats **sans parcelle** tant qu'il n'y a pas de numéro.
 
 **Dette / ménage (rapide, à faire au passage) :**
-- Retirer le code mort du sélecteur d'adresse abandonné : `GET /palladio/search`, `geocode_search`
-  (`palladio_engine.py`), et le `parcel_key` dans le node n8n `Extract Geocoded` si on confirme
-  l'abandon.
+- ✅ **FAIT (2026-06-21)** : code mort du sélecteur d'adresse retiré côté API (`GET /palladio/search`,
+  `geocode_search`, constantes geocode). Reste le `parcel_key` dans le node n8n `Extract Geocoded`
+  (inerte) à nettoyer côté workflow quand on y touchera.
 - Resserrer la pagination PDF (WeasyPrint laisse des pages à moitié vides à cause de
   `break-inside:avoid` sur les sections).
 

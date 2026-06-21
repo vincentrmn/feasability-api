@@ -89,13 +89,6 @@ GEOPORTAIL_359_URL = "https://features.geoportail.lu/collections/359/items"
 # Timeout HTTP pour la requete voisines (secondes)
 NEIGHBORS_HTTP_TIMEOUT_S = 8
 
-# Geocodeur d'adresse Geoportail (apiv4) — sert le selecteur d'adresse de la page
-# d'accueil : on renvoie TOUS les candidats officiels (avec cle cadastrale) pour
-# que l'utilisateur choisisse la bonne parcelle, au lieu de prendre results[0] en
-# aveugle (cause des erreurs de parcelle, cf. parcelles en drapeau).
-GEOPORTAIL_GEOCODE_URL = "https://apiv4.geoportail.lu/geocode/search"
-GEOCODE_HTTP_TIMEOUT_S = 8
-
 
 # ============================================================
 # CONSTANTES SPRINT 2 - SCB / LOGEMENTS / PARKINGS / TYPE / WARNINGS
@@ -456,70 +449,6 @@ def fetch_neighbors_359(bbox_wgs84: Tuple[float, float, float, float],
         except Exception:
             continue
     return voisines
-
-
-def geocode_search(query: str,
-                   timeout: int = GEOCODE_HTTP_TIMEOUT_S,
-                   limit: int = 8) -> List[Dict[str, Any]]:
-    """
-    Recherche d'adresse officielle via le geocodeur Geoportail (apiv4).
-
-    Renvoie la liste des candidats portant une cle cadastrale, normalises pour
-    alimenter un selecteur d'adresse : l'utilisateur choisit la bonne adresse
-    (donc la bonne parcelle) plutot que de laisser le pipeline prendre results[0]
-    en aveugle. Chaque entree : label, parcel_key/label, lon/lat WGS84, commune,
-    zip, street, postnumber, ratio, accuracy.
-
-    Tolerant a l'echec : requete vide, requests indisponible ou geoportail
-    injoignable -> liste vide (le formulaire texte simple reste fonctionnel).
-    """
-    q = (query or "").strip()
-    if not q or not _REQUESTS_OK:
-        return []
-    params = {"queryString": q, "returnParcelInfo": "true"}
-    headers = {"User-Agent": "Terravalu-Palladio/0.4"}
-    try:
-        r = requests.get(GEOPORTAIL_GEOCODE_URL, params=params,
-                         headers=headers, timeout=timeout)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        print(f"[palladio search] WARN geocode a echoue : {e}")
-        return []
-
-    if not data.get("success") or not data.get("results"):
-        return []
-
-    out: List[Dict[str, Any]] = []
-    for res in data["results"]:
-        parcel = res.get("parcel") or {}
-        key = parcel.get("key")   # peut etre None tant que l'adresse n'a pas de numero
-        geom = res.get("geomlonlat") or {}
-        coords = geom.get("coordinates") or [None, None]
-        ad = res.get("AddressDetails") or {}
-        label = (res.get("address") or "").strip().lstrip(",").strip()
-        if not label:
-            street = " ".join(p for p in (ad.get("street"), ad.get("postnumber")) if p)
-            loc = " ".join(p for p in (ad.get("zip"), ad.get("locality")) if p)
-            label = ", ".join(p for p in (street.strip(), loc.strip()) if p)
-        if not label:
-            continue   # rien d'affichable
-        out.append({
-            "label": label,
-            "parcel_key": key,
-            "parcel_label": parcel.get("label"),
-            "lon": coords[0],
-            "lat": coords[1],
-            "commune": ad.get("locality") or "",
-            "zip": ad.get("zip") or "",
-            "street": ad.get("street") or "",
-            "postnumber": ad.get("postnumber") or "",
-            "ratio": res.get("ratio") or 0,
-            "accuracy": res.get("accuracy") or 0,
-        })
-        if len(out) >= limit:
-            break
-    return out
 
 
 def detect_voirie_by_adjacency(parcelle_poly_luref: Polygon,

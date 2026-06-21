@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any
 
 from palladio_engine import (
-    calculer_emprise_palladio, calculer_palladio_full, geocode_search, PalladioError,
+    calculer_emprise_palladio, calculer_palladio_full, PalladioError,
 )
 from palladio_render import render_palladio_html, render_palladio_pdf
 from cockpit_render import compute_communes_status, render_landing_html
@@ -153,17 +153,6 @@ def palladio_render_pdf(payload: str = Form(...)):
         raise HTTPException(status_code=500, detail=f"Echec generation PDF : {e}")
     return Response(content=pdf, media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
-
-
-@router.get("/palladio/search")
-def palladio_search(q: str = ""):
-    """Autocomplete d'adresse officielle (geocodeur Geoportail).
-
-    Renvoie les candidats avec leur cle cadastrale pour que la page d'accueil
-    laisse l'utilisateur CHOISIR la bonne adresse/parcelle, au lieu de prendre
-    aveuglement le 1er resultat (cause des erreurs de parcelle en drapeau).
-    Jamais de 500 : requete vide ou geoportail injoignable -> results vide."""
-    return {"query": q, "results": geocode_search(q)}
 
 
 @router.get("/palladio/landing/html", response_class=HTMLResponse)
