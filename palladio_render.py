@@ -806,17 +806,24 @@ def _ensure_find_library() -> None:
 
     ctypes.util.find_library = _fl
 
-    # Precharge la pile native (deps de WeasyPrint) en RTLD_GLOBAL. Inclut la
-    # chaine de libgio (mount->blkid/selinux->uuid) requise par libpango.
-    sonames = ["pcre2-8", "ffi", "z", "bz2", "png16", "expat", "graphite2",
-               "brotlicommon", "brotlidec", "uuid", "selinux", "blkid", "mount",
-               "freetype", "fribidi", "pixman-1", "harfbuzz", "fontconfig",
-               "glib-2.0", "gmodule-2.0", "gobject-2.0", "gio-2.0",
-               "gdk_pixbuf-2.0", "cairo", "cairo-gobject",
-               "pango-1.0", "pangoft2-1.0", "pangocairo-1.0"]
-    paths = [p for p in (_locate(s) for s in sonames) if p]
+    # Precharge en RTLD_GLOBAL TOUTES les libs systeme (apt) du dossier, sauf les
+    # libs coeur de l'ABI (libc, libstdc++, python, ssl...) qu'il ne faut pas
+    # doubler avec les versions nix. Multi-passes : a chaque tour on charge ce dont
+    # les deps sont deja satisfaites. Resout tout l'arbre (libthai, libgio, etc.)
+    # d'un coup, sans dependre du cache ldconfig (ignore par le loader Nix).
+    deny = ("libc.so", "libc-", "ld-linux", "ld-2.", "libstdc++", "libgcc_s",
+            "libm.so", "libm-", "libmvec", "libpthread", "libdl.so", "libdl-",
+            "librt.so", "librt-", "libutil", "libanl", "libresolv", "libnss_",
+            "libcrypt.so", "libcrypt-", "libssl", "libcrypto", "libpython",
+            "libsqlite3", "libtinfo", "libncurses", "libreadline", "libhistory")
+    paths = set()
+    for d in ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu"):
+        for p in glob.glob(os.path.join(d, "lib*.so.*")):
+            b = os.path.basename(p)
+            if not any(b.startswith(x) or x in b for x in deny):
+                paths.add(p)
     remaining = list(paths)
-    for _ in range(8):
+    for _ in range(12):
         progressed = False
         for p in list(remaining):
             try:
