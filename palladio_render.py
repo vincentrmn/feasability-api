@@ -767,22 +767,15 @@ _FIND_LIB_PATCHED = False
 
 
 def _ensure_find_library() -> None:
-    """Rend WeasyPrint fonctionnel sous Nixpacks (Python de Nix + libs systeme apt).
-    Deux problemes resolus, EN PROCESS (aucune variable d'env globale, donc zero
-    risque sur shapely/pyproj et le demarrage) :
-
-    1. `ctypes.util.find_library` (Nix) ne resout pas les libs apt (renvoie None
-       alors que libgobject est dans /usr/lib et liste par ldconfig). -> on patche
-       find_library pour chercher le fichier dans les repertoires standards.
-    2. Le loader de Nix ignore le cache ldconfig systeme : en chargeant une lib apt
-       (libgobject), il ne trouve pas ses dependances transitives (libglib...). ->
-       on PRECHARGE toute la pile native en RTLD_GLOBAL (multi-passes : a chaque
-       tour on charge ce dont les deps sont deja satisfaites), par chemin complet.
-    Idempotent."""
+    """Sous Nixpacks, `ctypes.util.find_library` (Python de Nix) ne resout pas les
+    libs systeme apt (renvoie None alors que libgobject est dans /usr/lib et liste
+    par ldconfig) -> WeasyPrint plante a l'import. On patche find_library pour
+    chercher le fichier dans les repertoires standards et renvoyer son chemin
+    complet (cffi/ctypes savent charger un chemin). Les dependances TRANSITIVES de
+    ces libs sont resolues grace au LD_LIBRARY_PATH pose par start.sh. Idempotent."""
     global _FIND_LIB_PATCHED
     if _FIND_LIB_PATCHED:
         return
-    import ctypes
     import ctypes.util
     import glob
     import os
@@ -805,36 +798,6 @@ def _ensure_find_library() -> None:
         return _locate(name[3:] if name.startswith("lib") else name)
 
     ctypes.util.find_library = _fl
-
-    # Precharge en RTLD_GLOBAL TOUTES les libs systeme (apt) du dossier, sauf les
-    # libs coeur de l'ABI (libc, libstdc++, python, ssl...) qu'il ne faut pas
-    # doubler avec les versions nix. Multi-passes : a chaque tour on charge ce dont
-    # les deps sont deja satisfaites. Resout tout l'arbre (libthai, libgio, etc.)
-    # d'un coup, sans dependre du cache ldconfig (ignore par le loader Nix).
-    deny = ("libc.so", "libc-", "ld-linux", "ld-2.", "libstdc++", "libgcc_s",
-            "libm.so", "libm-", "libmvec", "libpthread", "libdl.so", "libdl-",
-            "librt.so", "librt-", "libutil", "libanl", "libresolv", "libnss_",
-            "libcrypt.so", "libcrypt-", "libssl", "libcrypto", "libpython",
-            "libsqlite3", "libtinfo", "libncurses", "libreadline", "libhistory")
-    paths = set()
-    for d in ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu"):
-        for p in glob.glob(os.path.join(d, "lib*.so.*")):
-            b = os.path.basename(p)
-            if not any(b.startswith(x) or x in b for x in deny):
-                paths.add(p)
-    remaining = list(paths)
-    for _ in range(12):
-        progressed = False
-        for p in list(remaining):
-            try:
-                ctypes.CDLL(p, mode=ctypes.RTLD_GLOBAL)
-                remaining.remove(p)
-                progressed = True
-            except OSError:
-                pass
-        if not remaining or not progressed:
-            break
-
     _FIND_LIB_PATCHED = True
 
 
