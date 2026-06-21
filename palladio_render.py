@@ -728,7 +728,9 @@ def _svgs_to_images(html: str) -> str:
         if p.returncode != 0 or p.stdout[:4] != b"\x89PNG":
             return svg
         b64 = base64.b64encode(p.stdout).decode("ascii")
-        return f'<img class="schema-svg" style="width:100%;height:auto" src="data:image/png;base64,{b64}">'
+        return (f'<img class="schema-svg" '
+                f'style="display:block;margin:10px auto;max-width:460px;max-height:360px;width:100%;height:auto" '
+                f'src="data:image/png;base64,{b64}">')
 
     return re.sub(r'<svg\b[^>]*class="schema-svg".*?</svg>', repl, html, flags=re.S)
 
@@ -829,8 +831,20 @@ def _styles():
             ".topbar-actions,.btn-home,.btn-home-bottom{display:none!important}"
             ".wrap{max-width:none;padding:0 6mm}"
             ".section{break-inside:avoid;page-break-inside:avoid;border-color:#ddd}"
-            ".schema-svg{break-inside:avoid;max-height:none}"
+            ".schema-svg{break-inside:avoid}"
             ".hero{break-inside:avoid}"
             "a[href]:after{content:''}"
             "body{-webkit-print-color-adjust:exact;print-color-adjust:exact}"
+            # wkhtmltopdf (vieux WebKit) ne gere ni CSS grid ni flex -> on repasse
+            # les KPIs / lignes de tableau / entetes en table/inline-block alignes.
+            ".hero-grid{display:table;width:100%;border-spacing:8px 0}"
+            ".hero-grid .kpi{display:table-cell;width:25%;vertical-align:top}"
+            ".text-row{display:table;width:100%;border-bottom:1px solid #f0f0f0;padding:0}"
+            ".text-row .k{display:table-cell;width:42%;padding:8px 8px 8px 0;vertical-align:top}"
+            ".text-row .v{display:table-cell;padding:8px 0;vertical-align:top}"
+            ".section-head{display:block}"
+            ".section-num{display:inline-block;vertical-align:middle;margin-right:8px;line-height:26px;text-align:center;padding:0}"
+            ".section-title{display:inline;vertical-align:middle}"
+            ".cock-head,.kpis,.legend,.shortcuts,.search{display:block}"
+            ".footer{display:block}.footer span{display:inline-block;margin-right:16px}"
             "}")
