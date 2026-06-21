@@ -85,11 +85,13 @@ Vincent ne peut pas changer le builder dans le dashboard). Conséquences vécues
 - **Palladio Scrap** (moteur de règles multi-communes) : 4 communes pilotes en Airtable
   (Strassen, Bertrange, Mamer, Junglinster). Schéma `palladio_scrap/SCHEMA.md`, données
   `palladio_scrap/communes/*.json`, briefing `PALLADIO_SCRAP_BRIEFING.md`.
-- **Recul avant adaptatif** dans le moteur : `fixe` / `lie_hauteur` / `alignement_voisins`
-  (médiane des façades voisines, collection bâtiments 2214). Sortie `recul_avant_adaptatif`.
+- **Recul avant adaptatif** dans le moteur : `fixe` / `lie_hauteur` / `alignement_voisins`.
+  ⚠️ **PÉRIMÉ ici, voir §0.0** : l'alignement n'est plus la *médiane* mais les **voisins immédiats
+  G/D** (v0.2), et il n'est **pas dormant** — le node n8n `Build Palladio Payload` passe bien
+  `recul_avant_methode`. Sortie `recul_avant_adaptatif`.
 - **Tests** (hors réseau) : `palladio_scrap/test_{alignment,render,contract}.py`.
-- **Reste** : finir le design des schémas (Vincent y reviendra) ; étendre Palladio Scrap
-  au-delà des 4 communes ; données graphiques (casier NQ) en vision.
+- **Reste** : voir la roadmap §15 (calibration alignement, mitoyenneté en bande, latéral/arrière
+  contextuels, extension Palladio Scrap). Le design des schémas et l'export PDF sont **faits** (§0.0).
 
 ---
 
@@ -400,6 +402,10 @@ Vincent attend des `.md` exhaustifs à la fin de chaque sprint majeur pour la co
 ---
 
 ## 9. Sprint 2 — Ce qu'il reste à faire (la suite)
+
+> ⚠️ **SECTION HISTORIQUE — Sprint 2 est FAIT.** SCB, logements, parkings, type de construction
+> et warnings sont dans `palladio_engine.py`, `/palladio/calcul/full` est live (v0.3.x). Gardée
+> comme référence de conception. Pour ce qui reste réellement à faire, voir la **roadmap §15**.
 
 **Objectif** : porter dans `palladio_engine.py` toute la logique métier que `main.py` v2.3 fait déjà (SCB, logements, parkings) + signalement façade courte, sans toucher `main.py`. Sortir Palladio v0.3.
 
