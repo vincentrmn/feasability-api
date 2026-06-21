@@ -767,28 +767,28 @@ _FIND_LIB_PATCHED = False
 
 
 def _ensure_find_library() -> None:
-    """Sous Nixpacks, le Python de Nix a un `ctypes.util.find_library` qui ne
-    resout PAS les libs installees par apt (verifie : libgobject est present dans
-    /usr/lib et liste par ldconfig, mais find_library renvoie None) -> WeasyPrint
-    plante a l'import. On ajoute un fallback : si find_library renvoie None, on
-    cherche le fichier dans les repertoires systeme standards et on renvoie son
-    chemin (cffi/ctypes savent charger un chemin complet). Idempotent."""
+    """Rend WeasyPrint fonctionnel sous Nixpacks (Python de Nix + libs systeme apt).
+    Deux problemes resolus, EN PROCESS (aucune variable d'env globale, donc zero
+    risque sur shapely/pyproj et le demarrage) :
+
+    1. `ctypes.util.find_library` (Nix) ne resout pas les libs apt (renvoie None
+       alors que libgobject est dans /usr/lib et liste par ldconfig). -> on patche
+       find_library pour chercher le fichier dans les repertoires standards.
+    2. Le loader de Nix ignore le cache ldconfig systeme : en chargeant une lib apt
+       (libgobject), il ne trouve pas ses dependances transitives (libglib...). ->
+       on PRECHARGE toute la pile native en RTLD_GLOBAL (multi-passes : a chaque
+       tour on charge ce dont les deps sont deja satisfaites), par chemin complet.
+    Idempotent."""
     global _FIND_LIB_PATCHED
     if _FIND_LIB_PATCHED:
         return
+    import ctypes
     import ctypes.util
     import glob
     import os
-    _orig = ctypes.util.find_library
     _dirs = ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib", "/lib")
 
-    def _fl(name):
-        found = _orig(name)
-        if found:
-            return found
-        # normaliser le nom demande par cffi/WeasyPrint : enlever un prefixe 'lib'
-        # et un suffixe de version '-0' eventuels (ex: 'libgobject-2.0-0' -> 'gobject-2.0')
-        base = name[3:] if name.startswith("lib") else name
+    def _locate(base):
         for cand in (base, re.sub(r"-\d+$", "", base)):
             for d in _dirs:
                 hits = sorted(glob.glob(os.path.join(d, "lib%s.so*" % cand)))
@@ -796,7 +796,36 @@ def _ensure_find_library() -> None:
                     return hits[-1]
         return None
 
+    _orig = ctypes.util.find_library
+
+    def _fl(name):
+        found = _orig(name)
+        if found:
+            return found
+        return _locate(name[3:] if name.startswith("lib") else name)
+
     ctypes.util.find_library = _fl
+
+    # Precharge la pile native (deps de WeasyPrint) en RTLD_GLOBAL.
+    sonames = ["pcre2-8", "ffi", "z", "bz2", "png16", "expat", "graphite2",
+               "brotlicommon", "brotlidec", "freetype", "fribidi", "pixman-1",
+               "harfbuzz", "fontconfig", "glib-2.0", "gmodule-2.0", "gobject-2.0",
+               "gio-2.0", "gdk_pixbuf-2.0", "cairo", "cairo-gobject",
+               "pango-1.0", "pangoft2-1.0", "pangocairo-1.0"]
+    paths = [p for p in (_locate(s) for s in sonames) if p]
+    remaining = list(paths)
+    for _ in range(8):
+        progressed = False
+        for p in list(remaining):
+            try:
+                ctypes.CDLL(p, mode=ctypes.RTLD_GLOBAL)
+                remaining.remove(p)
+                progressed = True
+            except OSError:
+                pass
+        if not remaining or not progressed:
+            break
+
     _FIND_LIB_PATCHED = True
 
 
