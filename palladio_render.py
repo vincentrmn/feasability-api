@@ -33,6 +33,7 @@ API_BASE = "https://web-production-afd8d.up.railway.app"
 # head ; ce doublon est sans effet a l'ecran.)
 _SVG_STYLE = (
     "<style>"
+    "text{font-family:'DejaVu Sans','Liberation Sans',Arial,sans-serif}"
     ".parcel-fill{fill:#fafafa;stroke:#111;stroke-width:0.5}.parcel-fill-light{fill:#fafafa;stroke:#bbb;stroke-width:0.45}.parcel-fill-final{fill:#f3f3f3;stroke:#888;stroke-width:0.45}"
     ".emprise-fill{fill:#111;fill-opacity:0.85;stroke:#000;stroke-width:0.5}.dot-vertex{fill:#111}.dot-geocode{fill:#2962ff}"
     ".lbl-vertex{font-size:4.2px;font-weight:700;fill:#111;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}"
@@ -735,6 +736,33 @@ def _svgs_to_images(html: str) -> str:
     return re.sub(r'<svg\b[^>]*class="schema-svg".*?</svg>', repl, html, flags=re.S)
 
 
+_PDF_FONT_CSS = None
+
+
+def _pdf_font_face_css() -> str:
+    """@font-face qui mappe la famille 'Inter' (deja utilisee partout dans le CSS)
+    sur la fonte DejaVu Sans EMBARQUEE (assets/). Garantit un rendu sans-serif
+    deterministe dans le PDF : sans ca, le wkhtmltopdf de Nix retombe sur un
+    serif par defaut. Mis en cache (lecture fichier une seule fois)."""
+    global _PDF_FONT_CSS
+    if _PDF_FONT_CSS is not None:
+        return _PDF_FONT_CSS
+    import os
+    import base64
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+    faces = []
+    for fname, weight in (("DejaVuSans.ttf", 400), ("DejaVuSans-Bold.ttf", 700)):
+        try:
+            with open(os.path.join(base, fname), "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+        except Exception:
+            continue
+        faces.append("@font-face{font-family:'Inter';font-style:normal;font-weight:%d;"
+                     "src:url(data:font/ttf;base64,%s) format('truetype')}" % (weight, b64))
+    _PDF_FONT_CSS = ("<style>" + "".join(faces) + "</style>") if faces else ""
+    return _PDF_FONT_CSS
+
+
 def render_palladio_pdf(response: Dict[str, Any], adresse: str = "",
                         contexte: Optional[Dict[str, Any]] = None) -> Tuple[bytes, str]:
     """Genere le PDF de l'etude cote serveur (compatible Nixpacks, sans find_library).
@@ -744,8 +772,9 @@ def render_palladio_pdf(response: Dict[str, Any], adresse: str = "",
     import subprocess
     import os
     html = render_palladio_html(response, adresse, contexte)
-    # police distante retiree : rendu sans dependance reseau (police systeme).
+    # police distante remplacee par la fonte embarquee (sans-serif deterministe).
     html = re.sub(r'<link[^>]*fonts\.googleapis[^>]*>', '', html)
+    html = html.replace("</head>", _pdf_font_face_css() + "</head>", 1)
     html = _svgs_to_images(html)
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", XDG_RUNTIME_DIR="/tmp")
     cmd = ["wkhtmltopdf", "--print-media-type", "--enable-local-file-access",
@@ -847,4 +876,9 @@ def _styles():
             ".section-title{display:inline;vertical-align:middle}"
             ".cock-head,.kpis,.legend,.shortcuts,.search{display:block}"
             ".footer{display:block}.footer span{display:inline-block;margin-right:16px}"
+            # liste des candidats fond : grid -> table (sinon colonnes collees)
+            ".cand-list{display:block}"
+            ".cand-row{display:table;width:100%;border-bottom:1px solid #f4f4f4}"
+            ".cand-row>span{display:table-cell;padding:4px 10px 4px 0;vertical-align:top;white-space:nowrap}"
+            ".cand-row .cand-surf{width:99%}"
             "}")
