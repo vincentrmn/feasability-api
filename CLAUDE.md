@@ -2,7 +2,69 @@
 
 > Document destiné à Claude Code (et tout autre instance de Claude qui prend le relais sur Palladio).
 > À lire **en entier** avant d'écrire la moindre ligne de code.
-> Dernière mise à jour : 2026-06-20 — Palladio Scrap + bascule prod + ménage archi.
+> Dernière mise à jour : 2026-06-21 — export PDF + sélecteur d'adresse + alignement v0.2.
+
+---
+
+## 0.0. Mise à jour 2026-06-21 (lire en premier — supersède §0 et suivantes)
+
+Session « scrap brief » (branche `claude/palladio-scrap-brief-6tpu5p`, mergée sur `main`).
+
+### Ce qui a changé
+- **Export PDF de l'étude (FAIT, en prod).** Bouton « Télécharger » (icône) sur la page
+  résultat → `POST /palladio/render/pdf` (Railway) qui **regénère le PDF côté serveur** et le
+  renvoie en pièce jointe. La page embarque le JSON `{response, adresse, contexte}` dans un
+  hidden field ; le bouton est un **form POST** (pas de JS) car la page n8n est servie en
+  **CSP `sandbox`** (génération PDF navigateur impossible ; `allow-forms`+`allow-downloads` OK).
+  - Moteur PDF = **WeasyPrint 69** (rendu propre : CSS grid/flex/@font-face).
+  - Schémas SVG **pré-rasterisés en PNG via `rsvg-convert`** puis `<img>` (WeasyPrint rend mal
+    le *texte* des SVG inline → labels qui disparaissent).
+  - **Fonte embarquée** (`assets/DejaVuSans*.ttf`, @font-face mappée sur `'Inter'`) → sans-serif
+    déterministe, corps ET schémas (le `<style>` SVG force `font-family:'Inter'`).
+  - Tampon date/heure (Europe/Luxembourg) + version Palladio dans le hero + footer.
+- **Sélecteur d'adresse : ABANDONNÉ / reverté.** Tentative d'autocomplete sur la page d'accueil
+  (`/palladio/search` + JS). Vincent n'en a pas voulu → page d'accueil revenue au **champ texte
+  simple**. ⚠️ Le code mort restant : endpoint `GET /palladio/search` (+ `geocode_search` dans
+  `palladio_engine.py`) et le patch n8n `parcel_key` dans `Extract Geocoded` (rétro-compatible,
+  inerte). À retirer un jour si on n'y revient pas.
+- **Alignement voisins v0.2 (FAIT).** `alignment_band_ra` ne prend plus la médiane de tous les
+  bâtiments mais **les voisins immédiats gauche/droite** (moyenne). Sortie enrichie
+  (`cote_gauche_m`, `cote_droite_m`, `fronts_adjacent_m`, `voisins[]` avec géométrie). **Schéma
+  HTML « Alignement sur les façades voisines »** ajouté dans `palladio_render.py` (cadrage local,
+  voisins retenus en ambre / écartés en gris). **Non calibré sur parcelles réelles** (egress
+  bloqué dans le conteneur dev).
+- **Mitoyenneté double (11 rue du Cimetière) : non tranché.** Diagnostic fait : la parcelle est
+  en bande (foncier privé des 2 côtés) mais un seul **mur bâti réel** (couche 2214) → le moteur
+  met le recul latéral à 0 d'un seul côté. Décision métier en attente (recul 0 sur côté privé
+  même sans mur bâti ?). Laissé tel quel à la demande de Vincent.
+
+### ⚠️ Apprentissages durs Railway / Nixpacks / WeasyPrint (NE PAS refaire les erreurs)
+Le service Railway de l'API est **verrouillé sur le builder NIXPACKS** (le Dockerfile est ignoré,
+Vincent ne peut pas changer le builder dans le dashboard). Conséquences vécues, très coûteuses :
+- **`ctypes.util.find_library` du Python-Nix ne résout PAS les libs système apt** (renvoie None
+  même si la lib est dans `/usr/lib/x86_64-linux-gnu` et listée par ldconfig). → WeasyPrint plante
+  à l'import. **Fix : `palladio_render._ensure_find_library()`** patche `find_library` (cherche le
+  fichier et renvoie le chemin complet) **et précharge toute la pile native en `RTLD_GLOBAL`**
+  (multi-passes, denylist = libs cœur ABI + sanitizers) car le loader Nix ignore le cache ldconfig
+  et ne résout pas les deps transitives (libgio→libmount→…, libthai…). C'est **lazy** (1er rendu).
+- **Libs système** fournies par **`nixpacks.toml` → `aptPkgs`** (PAS `nixPkgs` : les paquets nix
+  ne sont pas trouvés ; apt installe aux chemins standards). Liste : pango/glib/gdk-pixbuf/...,
+  `librsvg2-bin` (rsvg-convert), `fonts-dejavu-core`.
+- **NE JAMAIS** mettre une affectation de variable inline dans `startCommand`
+  (`LD_LIBRARY_PATH=... uvicorn`) NI `bash start.sh` : `bash` n'existe pas dans l'image Nixpacks
+  et l'inline a cassé le `${PORT}` → **deploy « Failed »**, Railway garde alors l'ancien déploiement
+  (piège : « ça marche » alors que la nouvelle version n'est pas live). `startCommand` =
+  `uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}`, point.
+- **wkhtmltopdf : abandonné** (projet mort 2023, pas de CSS grid/flex, SVG inline cassé sous Nix).
+  Ne pas y revenir.
+- **html2pdf / génération PDF côté navigateur : impossible** (page n8n en CSP `sandbox`).
+- **Vérifier le rendu, pas juste le 200.** Sonder l'endpoint déployé via une **sonde n8n** (egress
+  ouvert là-bas) — ex : POST `/palladio/render/pdf`, vérifier `%PDF` + nombre d'images embarquées
+  (`/Image`), et `find_library` via un endpoint diag temporaire. Les déploiements Railway **tardent**
+  (parfois >10 min, voire « Failed » silencieux) → toujours confirmer quelle version est live
+  (marqueur observable, ex. 404 d'un endpoint retiré) avant de dire « c'est bon ».
+
+### Roadmap proposée (prochaine conv) — voir §15 en bas
 
 ---
 
@@ -498,6 +560,49 @@ Exemple incorrect :
 > ✅ Tout est patché et déployé ! 🎉 J'ai mis à jour le workflow n8n et le moteur Palladio est maintenant à jour. N'hésite pas à me dire si tu veux que je fasse autre chose ou si tu as des questions sur l'implémentation. Je reste à ta disposition. 😊
 
 Tu vois la différence.
+
+---
+
+## 15. Roadmap — prochaine conversation
+
+État actuel (2026-06-21) : moteur Palladio v0.3.x en prod, page résultat HTML propre, **export
+PDF fonctionnel** (WeasyPrint), alignement voisins v0.2 livré mais **non calibré**. Pas d'urgence
+technique : ce qui suit est priorisé par valeur produit (cf. §2 — le B2C alimente Intelligence).
+
+**P1 — Calibrer l'alignement voisins sur parcelles réelles.**
+- `alignment_band_ra` v0.2 (voisins immédiats G/D) n'a jamais été validé sur du réel (egress dev
+  bloqué). Tester sur Bertrange/Mamer (zones `alignement_voisins`) via le HTML, ajuster les seuils
+  `ALIGN_DIST_CAP_M=15` / fenêtre latérale `12`. Le schéma « Alignement sur les façades voisines »
+  est là pour voir ce que l'algo retient.
+
+**P2 — Trancher la mitoyenneté en bande (décision métier de Vincent).**
+- Recul latéral 0 sur un côté bordé d'une parcelle privée même **sans mur bâti** (typologie bande/
+  ordre contigu) ? Si oui : baser le recul 0 sur l'**adjacence foncière** (déjà calculée,
+  `type_construction`) et plus seulement sur les murs détectés (couche 2214). Ajouter un warning
+  `MITOYENNETE_DROIT_NON_BATI`. Cas test : 11 rue du Cimetière.
+
+**P3 — Latéral / arrière contextuels (`lie_hauteur`).**
+- Le moteur ne dispatche que le **recul avant** typé. Étendre à latéral/arrière `lie_hauteur`
+  (Route d'Arlon, QGSC Bertrange). Schéma typé déjà prêt (`palladio_scrap/SCHEMA.md`).
+
+**P4 — Étendre Palladio Scrap au-delà des 4 communes.**
+- Pipeline LOCATE/DOWNLOAD/extract sur Railway/n8n (egress ouvert). Coût ~tokens négligeable
+  (~0,70 $/commune) ; le vrai coût = validation humaine (cf. `PALLADIO_SCRAP_BRIEFING.md`).
+  Garder `Confiance=auto` tant que non relu.
+
+**P5 — Onboarding d'une commune (UX).**
+- Vincent a évoqué un sélecteur d'adresse « officielle » (autocomplete) → **abandonné** cette
+  session, mais le besoin reste. Si on y revient : le faire sur la plateforme actuelle (page n8n),
+  attention au géocodeur qui renvoie des résultats **sans parcelle** tant qu'il n'y a pas de numéro.
+
+**Dette / ménage (rapide, à faire au passage) :**
+- Retirer le code mort du sélecteur d'adresse abandonné : `GET /palladio/search`, `geocode_search`
+  (`palladio_engine.py`), et le `parcel_key` dans le node n8n `Extract Geocoded` si on confirme
+  l'abandon.
+- Resserrer la pagination PDF (WeasyPrint laisse des pages à moitié vides à cause de
+  `break-inside:avoid` sur les sections).
+
+**Hors scope (rappel) :** 3D, précision OBB, auth/Stripe, FR/BE/DE — cf. §9.
 
 ---
 
