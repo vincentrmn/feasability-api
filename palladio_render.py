@@ -33,7 +33,7 @@ API_BASE = "https://web-production-afd8d.up.railway.app"
 # head ; ce doublon est sans effet a l'ecran.)
 _SVG_STYLE = (
     "<style>"
-    "text{font-family:'DejaVu Sans','Liberation Sans',Arial,sans-serif}"
+    "text{font-family:'Inter','DejaVu Sans',Arial,sans-serif}"
     ".parcel-fill{fill:#fafafa;stroke:#111;stroke-width:0.5}.parcel-fill-light{fill:#fafafa;stroke:#bbb;stroke-width:0.45}.parcel-fill-final{fill:#f3f3f3;stroke:#888;stroke-width:0.45}"
     ".emprise-fill{fill:#111;fill-opacity:0.85;stroke:#000;stroke-width:0.5}.dot-vertex{fill:#111}.dot-geocode{fill:#2962ff}"
     ".lbl-vertex{font-size:4.2px;font-weight:700;fill:#111;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}"
@@ -710,11 +710,11 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
 
 def _svgs_to_images(html: str) -> str:
     """Pre-rasterise chaque schema SVG en PNG (rsvg-convert) embarque en <img>.
-    Raison : le wkhtmltopdf de Nix rend mal le SVG inline (schemas vides dans le
-    PDF), alors qu'il rend parfaitement texte + <img>. rsvg-convert (binaire
-    librsvg, pas de find_library) est deterministe. On injecte le <style> SVG
-    avant rasterisation (rsvg n'a pas le CSS du <head>). Schema non convertible
-    -> on garde le SVG (degradation gracieuse)."""
+    WeasyPrint rend tres bien la page (grille/fontes) mais gere mal le texte des
+    SVG inline (labels A/B/C/D, cotes... disparaissent). rsvg-convert rend ce
+    texte fidelement et de facon deterministe. On injecte le <style> SVG avant
+    rasterisation (rsvg n'a pas le CSS du <head>). Schema non convertible -> on
+    garde le SVG (degradation gracieuse)."""
     import base64
     import subprocess
 
@@ -722,7 +722,7 @@ def _svgs_to_images(html: str) -> str:
         svg = m.group(0)
         svg2 = svg.replace('class="schema-svg">', 'class="schema-svg">' + _SVG_STYLE, 1)
         try:
-            p = subprocess.run(["rsvg-convert", "-w", "1000", "-b", "white"],
+            p = subprocess.run(["rsvg-convert", "-w", "1100", "-b", "white"],
                                input=svg2.encode("utf-8"), capture_output=True, timeout=20)
         except Exception:
             return svg
@@ -730,7 +730,7 @@ def _svgs_to_images(html: str) -> str:
             return svg
         b64 = base64.b64encode(p.stdout).decode("ascii")
         return (f'<img class="schema-svg" '
-                f'style="display:block;margin:10px auto;max-width:460px;max-height:360px;width:100%;height:auto" '
+                f'style="display:block;margin:8px auto;max-width:460px;width:100%;height:auto" '
                 f'src="data:image/png;base64,{b64}">')
 
     return re.sub(r'<svg\b[^>]*class="schema-svg".*?</svg>', repl, html, flags=re.S)
@@ -765,29 +765,19 @@ def _pdf_font_face_css() -> str:
 
 def render_palladio_pdf(response: Dict[str, Any], adresse: str = "",
                         contexte: Optional[Dict[str, Any]] = None) -> Tuple[bytes, str]:
-    """Genere le PDF de l'etude cote serveur (compatible Nixpacks, sans find_library).
-    Pipeline : page HTML -> schemas SVG rasterises en PNG (rsvg-convert) -> assemblage
-    texte+images par wkhtmltopdf (moteur WebKit, binaire). Rendu en media 'print'
-    (la barre d'actions est masquee). Retourne (pdf_bytes, filename)."""
-    import subprocess
-    import os
+    """Genere le PDF de l'etude cote serveur avec WeasyPrint (moteur moderne :
+    CSS grid/flex, SVG, @font-face). Compatible Nixpacks car les libs systeme
+    (pango/glib/...) sont installees par apt (aptPkgs) aux chemins standards ->
+    ctypes.util.find_library les trouve. Ajustements : police distante retiree +
+    fonte EMBARQUEE (@font-face 'Inter'), et <style> SVG injecte dans chaque
+    schema (WeasyPrint n'applique pas les classes du <head> aux elements SVG).
+    Import differe : l'API demarre meme si la lib manque. Retourne (pdf, filename)."""
+    from weasyprint import HTML  # import differe (libs systeme requises)
     html = render_palladio_html(response, adresse, contexte)
-    # police distante remplacee par la fonte embarquee (sans-serif deterministe).
     html = re.sub(r'<link[^>]*fonts\.googleapis[^>]*>', '', html)
     html = html.replace("</head>", _pdf_font_face_css() + "</head>", 1)
-    html = _svgs_to_images(html)
-    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", XDG_RUNTIME_DIR="/tmp")
-    cmd = ["wkhtmltopdf", "--print-media-type", "--enable-local-file-access",
-           "--encoding", "utf-8", "--quiet", "-", "-"]
-    try:
-        proc = subprocess.run(cmd, input=html.encode("utf-8"),
-                              capture_output=True, env=env, timeout=60)
-    except FileNotFoundError as e:
-        raise ImportError(f"wkhtmltopdf introuvable sur le PATH : {e}")
-    pdf = proc.stdout or b""
-    if pdf[:4] != b"%PDF":
-        err = (proc.stderr or b"").decode("utf-8", "ignore")[-400:]
-        raise RuntimeError(f"wkhtmltopdf code={proc.returncode} {err}")
+    html = _svgs_to_images(html)   # schemas SVG -> PNG (texte des labels fiable)
+    pdf = HTML(string=html, base_url=API_BASE).write_pdf()
     parcelle = (response or {}).get("parcelle") or {}
     ctx = contexte or {}
     fname = _pdf_filename(adresse, ctx.get("parcel_label") or parcelle.get("id") or "")

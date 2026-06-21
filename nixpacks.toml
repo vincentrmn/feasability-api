@@ -1,5 +1,5 @@
 [phases.setup]
-# python311 (libstdc++ pour shapely) + wkhtmltopdf (assemblage PDF texte+images) +
-# librsvg (rsvg-convert : rasterise les schemas SVG en PNG, le wkhtmltopdf de Nix
-# rendant mal le SVG inline) + fontconfig/police pour le texte.
-nixPkgs = ["python311", "wkhtmltopdf", "librsvg", "fontconfig", "dejavu_fonts"]
+# python311 (libstdc++ pour shapely). Libs WeasyPrint + rsvg-convert via APT
+# (chemins Ubuntu standards -> find_library OK). Fonte du PDF embarquee (@font-face).
+nixPkgs = ["python311"]
+aptPkgs = ["libpango-1.0-0", "libpangoft2-1.0-0", "libharfbuzz0b", "libfontconfig1", "libgdk-pixbuf-2.0-0", "libffi8", "libglib2.0-0", "librsvg2-bin", "fonts-dejavu-core"]
