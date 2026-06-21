@@ -1,0 +1,7 @@
+[phases.setup]
+# Restaure un build Nixpacks QUI DEMARRE (libstdc++ via stdenv pour shapely) +
+# les libs WeasyPrint. NB: le rendu PDF reste KO sous Nixpacks (find_library ne
+# voit pas libgobject) -> le PDF passe par le Dockerfile Debian une fois que le
+# builder du service Railway est bascule sur "Dockerfile" (dashboard).
+nixPkgs = ["python311", "dejavu_fonts", "glib", "pango", "harfbuzz", "fontconfig", "cairo", "gdk-pixbuf"]
+nixLibs = ["glib", "pango", "harfbuzz", "fontconfig", "cairo", "gdk-pixbuf"]
