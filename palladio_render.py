@@ -19,6 +19,19 @@ Hauteur_corniche_max_m, Hauteur_faite_max_m, DL_max_log_ha} }. Tout est optionne
 from typing import Dict, Any, List, Tuple, Optional
 import math
 import html as _h
+from datetime import datetime
+
+
+def _now_stamp() -> str:
+    """Horodatage de generation (heure du Luxembourg si dispo, sinon locale).
+    Sert le tampon "etude figee a l'instant t" affiche + exporte en PDF."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Luxembourg"))
+    except Exception:
+        now = datetime.now()
+    return now.strftime("%d/%m/%Y à %H:%M")
+
 
 FORM_URL = "https://n8n-production-8929d.up.railway.app/webhook/palladio"
 
@@ -629,8 +642,11 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
 
     kpi_log = (f'<div class="kpi"><div class="label">Logements estimés</div><div class="value">{lg.get("nb_logements")}</div></div>'
                if lg else "")
+    stamp = _now_stamp()
+    ver = _esc(meta.get("version") or "")
     hero = (f'<div class="hero"><h1>{_esc(adresse)}</h1>'
             f'<div class="addr">Parcelle {_esc(parcel_label)} · zone {_esc(code_zone)}{(" · " + _esc(nomZone)) if nomZone else ""}</div>'
+            f'<div class="gen">Étude générée le {stamp} · Palladio {ver}</div>'
             f'<div class="hero-grid">'
             f'<div class="kpi"><div class="label">Terrain</div><div class="value">{_f(terrain)} m²</div></div>'
             f'<div class="kpi"><div class="label">Règles (COS / CUS)</div><div class="value">{cos} / {css}</div>'
@@ -638,13 +654,17 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             f'<div class="kpi kpi-result"><div class="label">Emprise constructible</div>'
             f'<div class="value-big">{empM2} m²</div><div class="sub">{ratioPct}% du terrain</div></div>'
             f'{kpi_log}</div></div>')
-    topbar = f'<div class="topbar"><span class="brand">Palladio</span><a class="btn-home" href="{FORM_URL}">← Nouvelle recherche</a></div>'
+    topbar = (f'<div class="topbar"><span class="brand">Palladio</span>'
+              f'<span class="topbar-actions">'
+              f'<button type="button" class="btn-pdf" onclick="window.print()">Exporter en PDF</button>'
+              f'<a class="btn-home" href="{FORM_URL}">← Nouvelle recherche</a></span></div>')
     return (f'<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Palladio · {_esc(adresse)}</title>'
             f'<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
             f'<style>{_styles()}</style></head><body>{topbar}<div class="wrap">{hero}{s}'
             f'<a class="btn-home btn-home-bottom" href="{FORM_URL}">← Nouvelle recherche</a>'
-            f'<footer class="footer"><span>Palladio engine {_esc(meta.get("version"))}</span></footer></div>'
+            f'<footer class="footer"><span>Palladio engine {ver}</span>'
+            f'<span>Étude générée le {stamp}</span></footer></div>'
             f'{_DECLUTTER_JS}</body></html>')
 
 
@@ -701,5 +721,21 @@ def _styles():
             ".edge-voirie-thick{stroke:#c00;stroke-width:1.2;fill:none}.edge-fond-thick{stroke:#2a7;stroke-width:1.2;fill:none}"
             ".line-recul-avant{stroke:#c00;stroke-width:0.6;stroke-dasharray:1.8,1.8;fill:none}.line-recul-arriere{stroke:#2a7;stroke-width:0.6;stroke-dasharray:1.8,1.8;fill:none}.line-recul-prof{stroke:#84c;stroke-width:0.55;stroke-dasharray:1,1;fill:none}"
             ".lbl-recul-avant{font-size:3.3px;fill:#c00;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}.lbl-recul-arriere{font-size:3.3px;fill:#2a7;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:1;stroke-linejoin:round}.lbl-recul-prof{font-size:3px;fill:#84c;font-weight:700;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-width:0.9;stroke-linejoin:round}"
-            ".footer{margin-top:48px;padding-top:20px;border-top:1px solid var(--line);display:flex;justify-content:space-between;color:#999;font-size:12px;font-family:ui-monospace,monospace}"
-            "@media(max-width:600px){.wrap{padding:18px 14px 60px}.section{padding:16px 14px}.text-row{grid-template-columns:1fr;gap:2px}.hero h1{font-size:20px}.kpi .value-big{font-size:23px}}")
+            ".footer{margin-top:48px;padding-top:20px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:#999;font-size:12px;font-family:ui-monospace,monospace}"
+            ".gen{font-size:12px;color:var(--muted);margin-top:4px}"
+            ".topbar-actions{display:flex;align-items:center;gap:10px}"
+            ".btn-pdf{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--ink);background:#fff;border:1px solid var(--ink);padding:8px 14px;border-radius:9px;cursor:pointer;font-family:inherit}"
+            ".btn-pdf:hover{background:var(--soft)}"
+            "@media(max-width:600px){.wrap{padding:18px 14px 60px}.section{padding:16px 14px}.text-row{grid-template-columns:1fr;gap:2px}.hero h1{font-size:20px}.kpi .value-big{font-size:23px}}"
+            # --- impression / export PDF : on cache la barre d'actions et les boutons,
+            # on neutralise le sticky, et on evite de couper schemas/sections en deux ---
+            "@media print{"
+            ".topbar{position:static;border-bottom:1px solid var(--line)}"
+            ".topbar-actions,.btn-home,.btn-home-bottom{display:none!important}"
+            ".wrap{max-width:none;padding:0 6mm}"
+            ".section{break-inside:avoid;page-break-inside:avoid;border-color:#ddd}"
+            ".schema-svg{break-inside:avoid;max-height:none}"
+            ".hero{break-inside:avoid}"
+            "a[href]:after{content:''}"
+            "body{-webkit-print-color-adjust:exact;print-color-adjust:exact}"
+            "}")
