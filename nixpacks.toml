@@ -1,4 +1,6 @@
 [phases.setup]
-# python311 + librairies systeme requises par WeasyPrint (rendu PDF serveur) :
-# Pango (texte), HarfBuzz, fontconfig + une police (dejavu) pour le rendu hors-ligne.
-nixPkgs = ["python311", "pango", "harfbuzz", "fontconfig", "glib", "cairo", "gdk-pixbuf", "dejavu_fonts"]
+# python311 + une police (dejavu) pour le rendu PDF hors-ligne.
+nixPkgs = ["python311", "dejavu_fonts"]
+# Libs systeme requises par WeasyPrint, AJOUTEES AU LD_LIBRARY_PATH (nixLibs) :
+# sinon ctypes/cffi ne trouve pas libgobject-2.0 (glib), libpango, etc. au runtime.
+nixLibs = ["glib", "pango", "harfbuzz", "fontconfig", "cairo", "gdk-pixbuf", "fribidi", "pixman", "libffi"]
