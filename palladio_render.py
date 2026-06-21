@@ -24,7 +24,7 @@ from datetime import datetime
 
 # Génération PDF côté navigateur : capture le rendu écran (après le JS de mise en
 # page des schémas) et télécharge un vrai fichier .pdf, sans boîte d'impression.
-_HTML2PDF_CDN = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.2/html2pdf.bundle.min.js"
+_HTML2PDF_CDN = "https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.2/dist/html2pdf.bundle.min.js"
 
 
 def _now_stamp() -> str:
