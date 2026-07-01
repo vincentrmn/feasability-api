@@ -851,10 +851,42 @@ def _edge_inward_unit_normal(p1: List[float], p2: List[float],
     return (nx, ny)
 
 
+def _dist_point_segment(px: float, py: float,
+                        ax: float, ay: float, bx: float, by: float) -> float:
+    """Distance d'un point (px,py) au segment [a,b]."""
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    if L2 < 1e-12:
+        return math.hypot(px - ax, py - ay)
+    t = ((px - ax) * dx + (py - ay) * dy) / L2
+    t = max(0.0, min(1.0, t))
+    cx, cy = ax + t * dx, ay + t * dy
+    return math.hypot(px - cx, py - cy)
+
+
+def _touche_mur_mitoyen(coords: List[List[float]],
+                        party_segments: List[Tuple[Tuple[float, float], Tuple[float, float]]],
+                        seuil_m: float = 0.6) -> bool:
+    """True si le batiment (ses sommets) accoste un des murs mitoyens (segments de
+    limite parcellaire ou un mur bati a ete detecte). Sert a savoir de quel cote le
+    voisin est reellement accole a notre parcelle."""
+    if not party_segments:
+        return False
+    for (ax, ay), (bx, by) in party_segments:
+        for vx, vy in coords:
+            if _dist_point_segment(vx, vy, ax, ay, bx, by) <= seuil_m:
+                return True
+    return False
+
+
+
 def alignment_band_ra(p1: List[float], p2: List[float],
                       neighbor_polys_luref: List[Polygon],
                       centroid: Tuple[float, float],
-                      fallback_m: float) -> Tuple[float, Dict[str, Any]]:
+                      fallback_m: float,
+                      party_wall_segments: Optional[
+                          List[Tuple[Tuple[float, float], Tuple[float, float]]]] = None
+                      ) -> Tuple[float, Dict[str, Any]]:
     """
     Recul avant deduit de la bande d'alignement des batiments voisins ADJACENTS.
 
@@ -872,6 +904,14 @@ def alignment_band_ra(p1: List[float], p2: List[float],
     que l'ancienne mediane de TOUS les batiments de la fenetre, qui se faisait tirer
     par les garages / 2e rang / batiments d'angle. Aucun adjacent -> fallback chiffre.
 
+    Regle mitoyennete (v0.3) : si `party_wall_segments` est fourni (les cotes ou un
+    mur mitoyen a ete detecte) et qu'UN SEUL des deux voisins immediats est accole a
+    un de ces murs, on s'aligne sur ce voisin MITOYEN seul. Motivation : en ordre
+    contigu, le voisin accole partage la meme ligne de bati ; l'autre cote est
+    souvent une maison d'angle/detachee posee differemment (cas 11 rue des Champs,
+    Bertrange : voisin droite tourne vers la rue perpendiculaire). Le voisin ecarte
+    reste dans la sortie avec son motif, pour la lisibilite de l'etude.
+
     Pur geometrique (LUREF), testable hors reseau.
     """
     ALIGN_DIST_CAP_M = 15.0       # un recul avant reel ne depasse pas ~15 m
@@ -879,6 +919,7 @@ def alignment_band_ra(p1: List[float], p2: List[float],
     info: Dict[str, Any] = {"methode": "alignement_voisins", "n_voisins_utiles": 0,
                             "fronts_m": [], "fronts_adjacent_m": [],
                             "cote_gauche_m": None, "cote_droite_m": None,
+                            "regle": None,
                             "fallback_m": fallback_m, "fallback_used": False}
     n = _edge_inward_unit_normal(p1, p2, centroid)
     if n is None:
@@ -909,7 +950,9 @@ def alignment_band_ra(p1: List[float], p2: List[float],
             continue
         pc = sum(proj) / len(proj)           # position laterale (centre du batiment)
         cote = "gauche" if pc <= 0 else ("droite" if pc >= L else "face")
+        mito = _touche_mur_mitoyen(coords, party_wall_segments or [])
         cands.append({"front": front, "pc": pc, "cote": cote, "retenu": False,
+                      "mitoyen": mito, "motif": None,
                       "coords": [[round(vx, 2), round(vy, 2)] for vx, vy in coords]})
 
     # Voisin immediat de chaque cote : gauche = pc le plus grand (proche du bord 0),
@@ -917,22 +960,39 @@ def alignment_band_ra(p1: List[float], p2: List[float],
     gauche = [c for c in cands if c["cote"] == "gauche"]
     droite = [c for c in cands if c["cote"] == "droite"]
     en_face = [c for c in cands if c["cote"] == "face"]
+    cg = max(gauche, key=lambda c: c["pc"]) if gauche else None
+    cd = min(droite, key=lambda c: c["pc"]) if droite else None
+    if cg is not None:
+        info["cote_gauche_m"] = round(cg["front"], 2)
+    if cd is not None:
+        info["cote_droite_m"] = round(cd["front"], 2)
+
+    # Regle mitoyennete : un seul cote accole -> on s'aligne sur le mitoyen seul.
     adjacents: List[float] = []
-    if gauche:
-        cg = max(gauche, key=lambda c: c["pc"]); cg["retenu"] = True
-        info["cote_gauche_m"] = round(cg["front"], 2); adjacents.append(cg["front"])
-    if droite:
-        cd = min(droite, key=lambda c: c["pc"]); cd["retenu"] = True
-        info["cote_droite_m"] = round(cd["front"], 2); adjacents.append(cd["front"])
+    if cg is not None and cd is not None and (cg["mitoyen"] != cd["mitoyen"]):
+        mitoyen, ecarte = (cg, cd) if cg["mitoyen"] else (cd, cg)
+        mitoyen["retenu"] = True
+        ecarte["motif"] = "ecarte_au_profit_du_voisin_mitoyen"
+        adjacents.append(mitoyen["front"])
+        info["regle"] = f"mitoyen_{mitoyen['cote']}"
+    else:
+        if cg is not None:
+            cg["retenu"] = True; adjacents.append(cg["front"])
+        if cd is not None:
+            cd["retenu"] = True; adjacents.append(cd["front"])
+        if adjacents:
+            info["regle"] = "moyenne_voisins_immediats"
     # Aucun voisin lateral mais un batiment directement en face -> on l'utilise.
     if not adjacents and en_face:
         cf = min(en_face, key=lambda c: c["front"]); cf["retenu"] = True
-        adjacents.append(cf["front"])
+        adjacents.append(cf["front"]); info["regle"] = "batiment_en_face"
 
     info["fronts_m"] = sorted(round(c["front"], 2) for c in cands)
     # Geometrie des voisins (cap raisonnable pour le payload) -> schema HTML.
     info["voisins"] = [{"coords": c["coords"], "front_m": round(c["front"], 2),
-                        "cote": c["cote"], "retenu": c["retenu"]} for c in cands[:14]]
+                        "cote": c["cote"], "retenu": c["retenu"],
+                        "mitoyen": c["mitoyen"], "motif": c["motif"]}
+                       for c in cands[:14]]
 
     if not adjacents:
         info["fallback_used"] = True
@@ -949,7 +1009,9 @@ def compute_recul_avant_effectif(methode: Dict[str, Any],
                                  p1: List[float], p2: List[float],
                                  centroid: Tuple[float, float],
                                  neighbor_polys_luref: Optional[List[Polygon]] = None,
-                                 corniche_effective_m: Optional[float] = None
+                                 corniche_effective_m: Optional[float] = None,
+                                 party_wall_segments: Optional[
+                                     List[Tuple[Tuple[float, float], Tuple[float, float]]]] = None
                                  ) -> Tuple[float, Dict[str, Any]]:
     """
     Dispatch du recul avant selon le type defini par la commune (schema Palladio
@@ -977,7 +1039,8 @@ def compute_recul_avant_effectif(methode: Dict[str, Any],
         fallback = methode.get("fallback_m")
         fallback = float(fallback) if fallback is not None else 6.0
         ra, ainfo = alignment_band_ra(p1, p2, neighbor_polys_luref or [],
-                                      centroid, fallback)
+                                      centroid, fallback,
+                                      party_wall_segments=party_wall_segments)
         # Garde-fou : un alignement degenere (~0) n'est jamais un recul valide en
         # zone de faible densite -> on retombe sur le fallback chiffre.
         if ra is None or ra < 0.5:
@@ -1954,10 +2017,20 @@ def calculer_palladio_full(
             parcel_poly_align = Polygon(pts_luref_full)
             neighbor_polys = [b for b in (buildings or [])
                               if not b.is_empty and not b.intersects(parcel_poly_align)]
+            # Segments de limite ou un mur mitoyen bati est detecte -> l'alignement
+            # sait alors de quel cote le voisin est reellement accole (regle mitoyennete).
+            party_segments = []
+            for e in mitoyennete_batie.get("edges", []):
+                if e.get("mur_mitoyen_bati"):
+                    i = e["idx"]
+                    a = pts_luref_full[i]
+                    b = pts_luref_full[(i + 1) % len(pts_luref_full)]
+                    party_segments.append(((a[0], a[1]), (b[0], b[1])))
             recul_avant_effectif, recul_avant_just = compute_recul_avant_effectif(
                 recul_avant_methode, a_v, b_v, (cen.x, cen.y),
                 neighbor_polys_luref=neighbor_polys,
-                corniche_effective_m=corniche_effective_m)
+                corniche_effective_m=corniche_effective_m,
+                party_wall_segments=party_segments)
         except Exception as ex:
             print(f"[palladio recul] WARN recul avant adaptatif a echoue, fallback : {ex}")
             fb = (recul_avant_methode.get("fallback_m")

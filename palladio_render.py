@@ -392,7 +392,8 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             if ret and cd:
                 cxv = sum(c[0] for c in cd) / len(cd)
                 cyv = sum(c[1] for c in cd) / len(cd)
-                nb += f'<text x="{apx(cxv)}" y="{apy(cyv)}" class="lbl-mito">{_esc(v.get("cote"))} {v.get("front_m")}m</text>'
+                tag = " (mitoyen)" if v.get("mitoyen") else ""
+                nb += f'<text x="{apx(cxv)}" y="{apy(cyv)}" class="lbl-mito">{_esc(v.get("cote"))} {v.get("front_m")}m{tag}</text>'
         aWv, bWv = P[idxV], P[(idxV + 1) % n]
         al = edge_off(idxV, ra)
         alm = [(al[0][0] + al[1][0]) / 2, (al[0][1] + al[1][1]) / 2]
@@ -407,8 +408,16 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
             parts = []
             if g is not None: parts.append(f"gauche {g:g} m")
             if d is not None: parts.append(f"droite {d:g} m")
+            regle = adapt.get("regle")
+            if regle and regle.startswith("mitoyen_"):
+                cote_m = regle.split("_", 1)[1]
+                note = (f" Un seul voisin est <strong>accolé (mitoyen)</strong>, côté {cote_m} : "
+                        f"on s'aligne sur lui seul et on écarte le voisin d'en face "
+                        f"(souvent une maison d'angle tournée vers une autre rue).")
+            else:
+                note = ""
             cap = (f"Recul avant <em>aligné sur les voisins immédiats</em> ({', '.join(parts)}) → "
-                   f"<strong>{raS} m</strong>. En orange : les façades voisines retenues ; en gris : les autres "
+                   f"<strong>{raS} m</strong>.{note} En orange : les façades voisines retenues ; en gris : les autres "
                    f"bâtiments vus mais écartés (2ᵉ rang, garages, angle).")
         schAlign = (f'<svg viewBox="{avb}" class="schema-svg"><polygon points="{ap2(P)}" class="parcel-fill-light"/>'
                     f'{nb}</svg><div class="schema-caption">{cap}</div>')

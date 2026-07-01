@@ -74,8 +74,37 @@ def test_alignement_voisin_immediat_pas_mediane():
     assert info["fronts_adjacent_m"] == [5.0]      # mais un seul retenu
     print("OK alignement voisin immediat (pas mediane) -> 5.0", info["fronts_m"])
 
+def test_alignement_mitoyennete_prioritaire():
+    # Voisin gauche ACCOLE (mur mitoyen sur le bord gauche de la parcelle, x=0),
+    # front 8. Voisin droite DETACHE (maison d'angle), front 3. Sans regle on
+    # moyennerait a 5.5 ; avec le mur mitoyen a gauche on s'aligne sur le gauche -> 8.0.
+    g = Polygon([(-6, 8), (-0.1, 8), (-0.1, 16), (-6, 16)])   # accole au bord x=0, front 8
+    d = Polygon([(11, 3), (18, 3), (18, 11), (11, 11)])       # detache a droite, front 3
+    party = [((0.0, 0.0), (0.0, 30.0))]                        # mur mitoyen le long de x=0
+    ra, info = alignment_band_ra(P1, P2, [g, d], CENTROID, fallback_m=6.0,
+                                 party_wall_segments=party)
+    assert approx(ra, 8.0), (ra, info)
+    assert info["regle"] == "mitoyen_gauche"
+    assert info["n_voisins_utiles"] == 1
+    ecarte = [v for v in info["voisins"] if not v["retenu"]]
+    assert any(v["motif"] == "ecarte_au_profit_du_voisin_mitoyen" for v in ecarte), info["voisins"]
+    print("OK mitoyennete prioritaire -> 8.0 (gauche accole, droite ecarte)")
+
+def test_alignement_deux_mitoyens_moyenne():
+    # Les DEUX cotes accoles -> pas de priorite, on garde la moyenne (ordre contigu).
+    g = Polygon([(-6, 6), (-0.1, 6), (-0.1, 14), (-6, 14)])
+    d = Polygon([(10.1, 4), (16, 4), (16, 12), (10.1, 12)])
+    party = [((0.0, 0.0), (0.0, 30.0)), ((10.0, 0.0), (10.0, 30.0))]
+    ra, info = alignment_band_ra(P1, P2, [g, d], CENTROID, fallback_m=6.0,
+                                 party_wall_segments=party)
+    assert approx(ra, 5.0), (ra, info)          # (6+4)/2
+    assert info["regle"] == "moyenne_voisins_immediats" and info["n_voisins_utiles"] == 2
+    print("OK deux mitoyens -> moyenne 5.0")
+
 if __name__ == "__main__":
     test_fixe(); test_lie_hauteur(); test_alignement_deux_voisins()
     test_alignement_fallback(); test_alignement_ignore_voisin_arriere()
     test_alignement_voisin_immediat_pas_mediane()
+    test_alignement_mitoyennete_prioritaire()
+    test_alignement_deux_mitoyens_moyenne()
     print("\nTOUS LES TESTS PASSENT.")
