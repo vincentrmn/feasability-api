@@ -170,6 +170,11 @@ MITOYENNETE_MIN_OVERLAP_M = 3.0
 # Ignore les micro-aretes (coins de fusion) dans la detection batie (m)
 MITOYENNETE_MIN_EDGE_M = 2.0
 
+# Typologies en ordre contigu : sur ces parcelles, le recul lateral peut tomber a 0
+# sur un cote borde de residentiel prive MEME sans mur bati observe (mitoyennete de
+# droit, P2-A). Sert de sauvetage quand l'emprise reglementaire s'effondre.
+_TYPES_ORDRE_CONTIGU = {"bande", "maison_mitoyenne_2_facades", "maison_jumelee"}
+
 
 # ============================================================
 # REPROJECTION HELPERS (WGS84 <-> LUREF)
@@ -1099,10 +1104,12 @@ def _compute_enveloppe_unique(pts: List[List[float]], idx_voirie: int, idx_fond:
     n = len(pts)
     traces = []
 
-    # 1. Buffer lateral uniforme
+    # 1. Buffer lateral uniforme. NB : sur une lanière etroite (largeur < 2*rl),
+    # buffer(-rl) renvoie un polygone VIDE -> il ne faut PAS conclure au vide ici,
+    # car le 1bis ci-dessous va re-ajouter les bandes des cotes mitoyens (recul 0)
+    # et reconstruire l'enveloppe (cf. 113 rue du Kiem : maison en bande de 7 m de
+    # large, latéral 4.5 des deux cotes -> buffer vide, mais mitoyenne des 2 cotes).
     env = poly.buffer(-rl, join_style=2, mitre_limit=10)
-    if env.is_empty:
-        return env, traces
 
     # 1bis. Mitoyennete batie : recul 0 sur les cotes reellement accoles.
     # On re-ajoute la bande de parcelle situee a moins de rl de l'arete mitoyenne.
@@ -1209,6 +1216,7 @@ def calculer_emprise_palladio(
     top_k_fond: int = 3,
     parcelle_id: Optional[str] = None,
     party_wall_idxs: Optional[set] = None,
+    allow_empty: bool = False,
 ) -> Dict[str, Any]:
     """
     Calcule l'enveloppe constructible 2D d'une parcelle cadastrale.
@@ -1316,31 +1324,59 @@ def calculer_emprise_palladio(
     # Clip sur la parcelle cadastrale REELLE (securite anti-debordement post-fusion)
     best_env = best_env.intersection(parcel_poly_true)
     best_area = best_env.area if not best_env.is_empty else 0.0
+    ratio_vs_cadastrale = best_area / surface_cadastrale_m2 if surface_cadastrale_m2 > 0 else 0
 
-    if best_area < 1.0:
+    # ---- Extraction coins emprise + reprojection WGS84 ----
+    corners_luref = _polygon_to_corners(best_env) if best_area >= 1.0 else None
+    degenere = corners_luref is None
+    # allow_empty=True : on ne leve pas, on renvoie une structure avec emprise vide
+    # (la voirie/geometrie/aretes classees restent exploitables pour la detection
+    # mitoyennete en amont du verdict "enveloppe vide"). Sinon comportement legacy.
+    if degenere and not allow_empty:
         raise PalladioError(
             f"Enveloppe degeneree : surface {best_area:.1f} m2 sur parcelle de "
             f"{surface_cadastrale_m2:.0f} m2. Reculs trop restrictifs ? "
             f"(avant={recul_avant_m}, lateral={recul_lateral_m}, arriere={recul_arriere_m})"
         )
 
-    ratio_vs_cadastrale = best_area / surface_cadastrale_m2 if surface_cadastrale_m2 > 0 else 0
-
-    # ---- Extraction coins emprise + reprojection WGS84 ----
-    corners_luref = _polygon_to_corners(best_env)
-    if corners_luref is None:
-        raise PalladioError("Polygone enveloppe extractible vide apres calcul")
-    corners_wgs84 = luref_ring_to_wgs84(corners_luref)
-
     # ---- Labels aretes ----
     idx_voirie_label = chr(65 + idx_voirie) + chr(65 + (idx_voirie + 1) % n_sommets)
     idx_fond_label = chr(65 + best_idx_fond) + chr(65 + (best_idx_fond + 1) % n_sommets)
+
+    if degenere:
+        emprise_block: Dict[str, Any] = {
+            "geometry_luref": None,
+            "geometry_wgs84": None,
+            "surface_m2": round(best_area, 1),
+            "nb_sommets": 0,
+            "ratio_vs_cadastrale": round(ratio_vs_cadastrale, 3),
+            "mitoyennete_batie_appliquee": sorted(
+                (party_wall_idxs or set()) - {idx_voirie, best_idx_fond}),
+        }
+    else:
+        corners_wgs84 = luref_ring_to_wgs84(corners_luref)
+        emprise_block = {
+            "geometry_luref": {
+                "type": "Polygon",
+                "coordinates": [_close_ring([list(p) for p in corners_luref])],
+            },
+            "geometry_wgs84": {
+                "type": "Polygon",
+                "coordinates": [_close_ring([list(p) for p in corners_wgs84])],
+            },
+            "surface_m2": round(best_area, 1),
+            "nb_sommets": len(corners_luref),
+            "ratio_vs_cadastrale": round(ratio_vs_cadastrale, 3),
+            "mitoyennete_batie_appliquee": sorted(
+                (party_wall_idxs or set()) - {idx_voirie, best_idx_fond}),
+        }
 
     return {
         "meta": {
             "engine": "palladio",
             "version": "0.3.2",
             "method": "shapely_buffer_halfplanes_v5_cadastral_voirie_merged_faces",
+            "enveloppe_degeneree": degenere,
         },
         "parcelle": {
             "geometry_luref": {
@@ -1375,21 +1411,7 @@ def calculer_emprise_palladio(
             "arriere_m": recul_arriere_m,
             "profondeur_max_m": profondeur_max_m,
         },
-        "emprise": {
-            "geometry_luref": {
-                "type": "Polygon",
-                "coordinates": [_close_ring([list(p) for p in corners_luref])],
-            },
-            "geometry_wgs84": {
-                "type": "Polygon",
-                "coordinates": [_close_ring([list(p) for p in corners_wgs84])],
-            },
-            "surface_m2": round(best_area, 1),
-            "nb_sommets": len(corners_luref),
-            "ratio_vs_cadastrale": round(ratio_vs_cadastrale, 3),
-            "mitoyennete_batie_appliquee": sorted(
-                (party_wall_idxs or set()) - {idx_voirie, best_idx_fond}),
-        },
+        "emprise": emprise_block,
         "traces_reculs": best_traces,
     }
 
@@ -1944,9 +1966,12 @@ def calculer_palladio_full(
     """
     zone_pag = zone_pag or {}
 
-    # ---- 1. Enveloppe + voirie (reutilise tout le Sprint 1/1.5) ----
-    enveloppe_vide = False
-    base = None
+    # ---- 1. Enveloppe + voirie (allow_empty : ne bloque PAS si l'emprise
+    # reglementaire s'effondre). On calcule quand meme voirie/geometrie/aretes,
+    # pour detecter la mitoyennete AVANT de trancher "enveloppe vide" : une maison
+    # en bande a un recul lateral 0 sur ses murs mitoyens -> l'emprise n'est nulle
+    # qu'en apparence (cf. 113 rue du Kiem). Le verdict enveloppe_vide est repousse
+    # apres la detection mitoyennete (3bis). ----
     try:
         base = calculer_emprise_palladio(
             parcel_geometry_wgs84=parcel_geometry_wgs84,
@@ -1956,14 +1981,11 @@ def calculer_palladio_full(
             recul_arriere_m=recul_arriere_m,
             profondeur_max_m=profondeur_max_m,
             parcelle_id=parcelle_id,
+            allow_empty=True,
         )
     except PalladioError as e:
-        enveloppe_vide = True
-        base_error = str(e)
-
-    # Cas enveloppe degeneree : reponse structuree, pas de 500
-    if enveloppe_vide:
-        # On tente quand meme de reconstruire la parcelle pour les warnings geometrie
+        # Echec DUR (parcelle invalide, pyproj KO, aucun candidat fond) : on ne peut
+        # meme pas classer la parcelle -> reponse enveloppe vide minimale, pas de 500.
         try:
             ring_wgs = _normalize_ring(parcel_geometry_wgs84["coordinates"][0])
             nb_sommets = len(ring_wgs)
@@ -1975,12 +1997,12 @@ def calculer_palladio_full(
             zone_pag=zone_pag, enveloppe_vide=True)
         return {
             "meta": {"engine": "palladio", "version": "0.3.2", "method": "full",
-                     "enveloppe_vide": True, "error": base_error},
+                     "enveloppe_vide": True, "error": str(e)},
             "parcelle": {"nb_sommets": nb_sommets, "id": parcelle_id},
             "scb": None, "logements": None, "parkings": None,
             "type_construction": {"type": "indetermine", "method": "enveloppe_vide"},
             "warnings": warnings,
-            "enveloppe": base,
+            "enveloppe": None,
         }
 
     # ---- 2. Type de construction (proxy cadastral, Sprint 2) ----
@@ -2061,52 +2083,101 @@ def calculer_palladio_full(
                 recul_avant_just["recul_m"] = float(fb)
                 recul_avant_just["source"] = "filet_recul_nul"
 
-    # ---- 3bis. Re-calcul enveloppe : recul 0 sur murs mitoyens batis +
-    # recul avant effectif si adaptatif. ----
-    # Sur les cotes reellement accoles (mur_mitoyen_bati), le recul lateral tombe
-    # a 0 : l'enveloppe peut s'etendre jusqu'a la limite. Corrige l'emprise absurde
-    # des maisons en bande/mitoyennes (cf. 20 rue du Kiem : 4% -> realiste).
+    # ---- 3bis. Enveloppe REELLE : recul 0 sur murs mitoyens + recul avant effectif ----
+    # Sur les cotes reellement accoles (mur_mitoyen_bati), le recul lateral tombe a 0 :
+    # l'enveloppe s'etend jusqu'a la limite. Corrige l'emprise absurde des maisons en
+    # bande/mitoyennes (cf. 20 rue du Kiem) ET rattrape les parcelles etroites ou le
+    # latéral reglementaire faisait tomber l'emprise a 0 (cf. 113 rue du Kiem).
+    def _emprise(rav, party):
+        return calculer_emprise_palladio(
+            parcel_geometry_wgs84=parcel_geometry_wgs84,
+            point_geocode_wgs84=point_geocode_wgs84,
+            recul_avant_m=rav,
+            recul_lateral_m=recul_lateral_m,
+            recul_arriere_m=recul_arriere_m,
+            profondeur_max_m=profondeur_max_m,
+            parcelle_id=parcelle_id,
+            party_wall_idxs=party or None,
+            allow_empty=True,
+        )
+
     party_wall_idxs = {e["idx"] for e in mitoyennete_batie.get("edges", [])
                        if e.get("mur_mitoyen_bati")}
     need_recalc = bool(party_wall_idxs) or abs(recul_avant_effectif - recul_avant_m) > 1e-6
     if need_recalc:
         try:
-            base = calculer_emprise_palladio(
-                parcel_geometry_wgs84=parcel_geometry_wgs84,
-                point_geocode_wgs84=point_geocode_wgs84,
-                recul_avant_m=recul_avant_effectif,
-                recul_lateral_m=recul_lateral_m,
-                recul_arriere_m=recul_arriere_m,
-                profondeur_max_m=profondeur_max_m,
-                parcelle_id=parcelle_id,
-                party_wall_idxs=party_wall_idxs or None,
-            )
-            idx_voirie = base["voirie"]["idx"]
-            idx_fond = base["fond"]["idx"]
+            base = _emprise(recul_avant_effectif, party_wall_idxs)
         except PalladioError as ex:
             print(f"[palladio bati] WARN recalcul (recul avant {recul_avant_effectif}) a echoue : {ex}")
-            # Retry avec le recul avant scalaire/fallback MAIS en gardant les murs
-            # mitoyens : ne jamais perdre la mitoyennete a cause d'un recul avant
-            # adaptatif degenere (sinon des reculs lateraux reapparaissent a tort).
-            if party_wall_idxs:
-                try:
-                    base = calculer_emprise_palladio(
-                        parcel_geometry_wgs84=parcel_geometry_wgs84,
-                        point_geocode_wgs84=point_geocode_wgs84,
-                        recul_avant_m=recul_avant_m,
-                        recul_lateral_m=recul_lateral_m,
-                        recul_arriere_m=recul_arriere_m,
-                        profondeur_max_m=profondeur_max_m,
-                        parcelle_id=parcelle_id,
-                        party_wall_idxs=party_wall_idxs,
-                    )
-                    idx_voirie = base["voirie"]["idx"]
-                    idx_fond = base["fond"]["idx"]
-                    recul_avant_just = {"type": "fixe", "recul_m": recul_avant_m,
-                                        "source": "retry_scalaire_apres_degenerescence"}
-                except PalladioError as ex2:
-                    print(f"[palladio bati] WARN retry party-wall a echoue, garde pass-1 : {ex2}")
+
+    # ---- 3bis-A (P2-A). Mitoyennete de DROIT (adjacence fonciere, sans mur bati) ----
+    # Si l'emprise reste vide ET que la parcelle est en ordre contigu, on met le recul
+    # lateral a 0 sur les cotes bordes de residentiel prive MEME sans mur bati observe.
+    # Conservateur : ne se declenche qu'en SAUVETAGE d'une emprise degeneree -> ne
+    # sur-construit jamais une maison detachee saine. Warning MITOYENNETE_DROIT_NON_BATI.
+    droit_non_bati_idxs: set = set()
+    if (base["meta"].get("enveloppe_degeneree")
+            and type_construction.get("type") in _TYPES_ORDRE_CONTIGU):
+        foncier = {
+            e["idx"] for e in edges_classified
+            if e["idx"] not in (idx_voirie, idx_fond)
+            and not e.get("is_voirie")
+            and e.get("voisin_id") is not None
+            and e.get("voisin_nature") not in PUBLIC_NATURES
+            and e.get("length_m", 0) >= MITOYENNETE_MIN_EDGE_M
+        }
+        nouveaux = foncier - party_wall_idxs
+        if nouveaux:
+            droit_non_bati_idxs = nouveaux
+            party_wall_idxs = party_wall_idxs | foncier
+            try:
+                base = _emprise(recul_avant_effectif, party_wall_idxs)
+            except PalladioError as ex:
+                print(f"[palladio bati] WARN sauvetage foncier a echoue : {ex}")
+
+    # Si c'est le recul avant EFFECTIF qui degenere l'emprise, retente le scalaire
+    # d'entree en gardant les murs mitoyens (ne jamais perdre la mitoyennete).
+    if (base["meta"].get("enveloppe_degeneree")
+            and abs(recul_avant_effectif - recul_avant_m) > 1e-6):
+        try:
+            retry = _emprise(recul_avant_m, party_wall_idxs)
+            if not retry["meta"].get("enveloppe_degeneree"):
+                base = retry
+                recul_avant_just = {"type": "fixe", "recul_m": recul_avant_m,
+                                    "source": "retry_scalaire_apres_degenerescence"}
+        except PalladioError as ex2:
+            print(f"[palladio bati] WARN retry scalaire a echoue : {ex2}")
+
+    idx_voirie = base["voirie"]["idx"]
+    idx_fond = base["fond"]["idx"]
     base["recul_avant_adaptatif"] = recul_avant_just
+
+    # ---- 3bis-B. Verdict enveloppe vide FINAL (apres mitoyennete) ----
+    # Meme avec le recul 0 sur les mitoyens l'emprise reste nulle -> vraie enveloppe
+    # vide, mais avec un diagnostic utile (mitoyennete + type) plutot que
+    # "reculs trop restrictifs".
+    if base["meta"].get("enveloppe_degeneree"):
+        surface_cad = base["parcelle"]["surface_cadastrale_m2"]
+        err = (f"Enveloppe vide meme apres mitoyennete : parcelle {surface_cad:.0f} m2, "
+               f"type {type_construction.get('type')}, "
+               f"{mitoyennete_batie.get('n_murs_mitoyens_batis', 0)} mur(s) mitoyen(s) bati(s). "
+               f"Profondeur / reculs incompatibles.")
+        warnings = generate_warnings(
+            edges_classified=edges_classified, idx_voirie=idx_voirie,
+            all_voirie_edges=all_voirie_edges,
+            parcelle_nb_sommets=base["parcelle"]["nb_sommets"],
+            type_construction=type_construction, zone_pag=zone_pag, enveloppe_vide=True)
+        return {
+            "meta": {"engine": "palladio", "version": "0.3.2", "method": "full",
+                     "enveloppe_vide": True, "error": err},
+            "parcelle": base["parcelle"],
+            "voirie": base["voirie"],
+            "scb": None, "logements": None, "parkings": None,
+            "type_construction": type_construction,
+            "mitoyennete_batie": mitoyennete_batie,
+            "warnings": warnings,
+            "enveloppe": base,
+        }
 
     # ---- 4. Plafond COS sur l'emprise au sol ----
     # L'enveloppe geometrique (apres reculs) doit aussi respecter le COS
@@ -2167,6 +2238,22 @@ def calculer_palladio_full(
         profondeur_insuffisante=prof_insuffisante,
         voirie_edge_label=base["voirie"]["edge_label"],
     )
+    # Mitoyennete de DROIT appliquee (P2-A) : recul lateral 0 base sur l'adjacence
+    # fonciere privee, sans mur bati observe -> a verifier par l'architecte.
+    if droit_non_bati_idxs:
+        labels = ", ".join(sorted(
+            chr(65 + i) + chr(65 + (i + 1) % base["parcelle"]["nb_sommets"])
+            for i in droit_non_bati_idxs))
+        mitoyennete_batie["droit_non_bati_idxs"] = sorted(droit_non_bati_idxs)
+        warnings.append(_mk_warning(
+            "MITOYENNETE_DROIT_NON_BATI", "warning",
+            f"Recul lateral mis a 0 sur cote(s) {labels} par mitoyennete de DROIT "
+            "(parcelle voisine privee, ordre contigu) sans mur bati observe : "
+            "a confirmer par l'architecte.",
+            f"Lateral setback set to 0 on side(s) {labels} from cadastral party-wall "
+            "right (private neighbour, terraced order) without an observed built wall: "
+            "to be confirmed by the architect.",
+            edge=labels))
 
     # ---- 7. Assemblage ----
     return {
