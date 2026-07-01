@@ -141,6 +141,36 @@ def _poly_area(pts):
     return abs(s / 2)
 
 
+def _min_rect_dims(pts):
+    """Dimensions (grand cote, petit cote) du rectangle englobant ORIENTE minimal.
+    Donne le vrai gabarit largeur x profondeur d'une emprise oblique, la ou prendre
+    les 2 aretes les plus longues donnait 2 cotes paralleles (ex : 11.3 x 11.2 au
+    lieu de 7.5 x 11.2 sur une parcelle en lanière tournee)."""
+    P = list(pts)
+    if len(P) >= 2 and P[0] == P[-1]:
+        P = P[:-1]
+    if len(P) < 3:
+        return (0.0, 0.0)
+    n = len(P)
+    best = None
+    for i in range(n):
+        ax, ay = P[i]
+        bx, by = P[(i + 1) % n]
+        ex, ey = bx - ax, by - ay
+        L = math.hypot(ex, ey)
+        if L < 1e-9:
+            continue
+        ux, uy = ex / L, ey / L
+        nx, ny = -uy, ux
+        us = [px * ux + py * uy for px, py in P]
+        ns = [px * nx + py * ny for px, py in P]
+        w, h = max(us) - min(us), max(ns) - min(ns)
+        area = w * h
+        if best is None or area < best[0]:
+            best = (area, max(w, h), min(w, h))
+    return (best[1], best[2]) if best else (0.0, 0.0)
+
+
 def _esc(s):
     return _h.escape(str(s)) if s is not None else ""
 
@@ -490,9 +520,9 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
         mx += nx * doff
         my += ny * doff
         edims += f'<text x="{px(mx)}" y="{py(my)}" class="lbl-dim">{_n(L)}m</text>'
-    elens.sort(reverse=True)
-    dimres = (f' Gabarit au sol : environ <strong>{_n(elens[0])} m × {_n(elens[1])} m</strong>.'
-              if len(elens) >= 2 else "")
+    gd = _min_rect_dims(E)
+    dimres = (f' Gabarit au sol : environ <strong>{_n(gd[0])} m × {_n(gd[1])} m</strong>.'
+              if gd[0] > 0 else "")
     schEmprise = (f'<svg viewBox="{vb}" class="schema-svg"><polygon points="{p2svg(P)}" class="parcel-fill-final"/>'
                   f'<polygon points="{p2svg(E)}" class="emprise-fill"/>{edims}{vlabels}</svg>'
                   f'<div class="schema-caption">La zone noire est l\'emprise constructible : '
