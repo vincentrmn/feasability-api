@@ -63,8 +63,14 @@ const zone_pag = {
   combles_retrait: niv.combles,
   logement_autorise: extractAirtable(rules.Logement_autorise) || 'Non',
   commerce_autorise: extractAirtable(rules.Commerce_autorise) || 'Non',
-  cus_max: (toFloat(rules.CUS_max) !== null ? toFloat(rules.CUS_max) : toFloat(rules.CSS_max)),
+  // CUS = coefficient d'utilisation du sol (densite : plancher total / terrain).
+  // NE PAS retomber sur le CSS : le CSS est le coefficient de SCELLEMENT du sol
+  // (part impermeabilisee du terrain), sans rapport avec la densite de plancher.
+  // Une zone sans CUS n'a PAS de plafond de densite -> cus_max reste null et le
+  // moteur ne rogne pas la SCB (cf. Strassen HAB-2, regle en COS + CSS uniquement).
+  cus_max: toFloat(rules.CUS_max),
   cos_max: toFloat(rules.COS_max),
+  css_max: toFloat(rules.CSS_max),
   min_scb_logement_pct: toFloat(rules['Min_SCB_logement_%_QE']),
   dl_max: toFloat(rules.DL_max_log_ha),
   nb_log_max_par_construction: toFloat(rules.Nb_logements_max),
