@@ -416,6 +416,10 @@ def render_palladio_html(response: Dict[str, Any], adresse: str = "",
                         f"(souvent une maison d'angle tournée vers une autre rue).")
             else:
                 note = ""
+            n_hr = adapt.get("n_ecartes_hors_rue") or 0
+            if n_hr:
+                note += (f" {n_hr} bâtiment(s) <strong>écarté(s)</strong> car situé(s) de l'autre côté "
+                         f"d'une rue perpendiculaire (pas la même rue que la parcelle).")
             cap = (f"Recul avant <em>aligné sur les voisins immédiats</em> ({', '.join(parts)}) → "
                    f"<strong>{raS} m</strong>.{note} En orange : les façades voisines retenues ; en gris : les autres "
                    f"bâtiments vus mais écartés (2ᵉ rang, garages, angle).")

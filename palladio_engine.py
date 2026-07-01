@@ -916,6 +916,11 @@ def alignment_band_ra(p1: List[float], p2: List[float],
     """
     ALIGN_DIST_CAP_M = 15.0       # un recul avant reel ne depasse pas ~15 m
     ALIGN_LATERAL_WINDOW_M = 12.0  # tolerance laterale autour de la frontage
+    # Ecart lateral max entre le batiment et le front de notre parcelle pour qu'il
+    # compte comme voisin de LA MEME rue. Un voisin contigu (mitoyen ou petit jardin)
+    # est a ~0 ; une maison d'angle de l'autre cote d'une rue perpendiculaire en est
+    # separee par la largeur de chaussee (>= 5-6 m) -> ecartee (cas 11 rue des Champs).
+    ALIGN_LATERAL_GAP_MAX_M = 5.0
     info: Dict[str, Any] = {"methode": "alignement_voisins", "n_voisins_utiles": 0,
                             "fronts_m": [], "fronts_adjacent_m": [],
                             "cote_gauche_m": None, "cote_droite_m": None,
@@ -951,15 +956,21 @@ def alignment_band_ra(p1: List[float], p2: List[float],
         pc = sum(proj) / len(proj)           # position laterale (centre du batiment)
         cote = "gauche" if pc <= 0 else ("droite" if pc >= L else "face")
         mito = _touche_mur_mitoyen(coords, party_wall_segments or [])
+        # Ecart lateral au front [0, L] : 0 si le batiment chevauche le front.
+        gap = max(0.0, min(proj) - L, -max(proj))
+        hors_rue = gap > ALIGN_LATERAL_GAP_MAX_M
         cands.append({"front": front, "pc": pc, "cote": cote, "retenu": False,
-                      "mitoyen": mito, "motif": None,
+                      "mitoyen": mito, "hors_rue": hors_rue, "gap_lateral_m": round(gap, 1),
+                      "motif": ("hors_alignement_rue" if hors_rue else None),
                       "coords": [[round(vx, 2), round(vy, 2)] for vx, vy in coords]})
 
     # Voisin immediat de chaque cote : gauche = pc le plus grand (proche du bord 0),
-    # droite = pc le plus petit (proche du bord L).
-    gauche = [c for c in cands if c["cote"] == "gauche"]
-    droite = [c for c in cands if c["cote"] == "droite"]
-    en_face = [c for c in cands if c["cote"] == "face"]
+    # droite = pc le plus petit (proche du bord L). On ecarte les batiments non
+    # contigus au front (maison d'angle de l'autre cote d'une rue perpendiculaire).
+    gauche = [c for c in cands if c["cote"] == "gauche" and not c["hors_rue"]]
+    droite = [c for c in cands if c["cote"] == "droite" and not c["hors_rue"]]
+    en_face = [c for c in cands if c["cote"] == "face" and not c["hors_rue"]]
+    info["n_ecartes_hors_rue"] = sum(1 for c in cands if c["hors_rue"])
     cg = max(gauche, key=lambda c: c["pc"]) if gauche else None
     cd = min(droite, key=lambda c: c["pc"]) if droite else None
     if cg is not None:
@@ -991,7 +1002,8 @@ def alignment_band_ra(p1: List[float], p2: List[float],
     # Geometrie des voisins (cap raisonnable pour le payload) -> schema HTML.
     info["voisins"] = [{"coords": c["coords"], "front_m": round(c["front"], 2),
                         "cote": c["cote"], "retenu": c["retenu"],
-                        "mitoyen": c["mitoyen"], "motif": c["motif"]}
+                        "mitoyen": c["mitoyen"], "hors_rue": c["hors_rue"],
+                        "gap_lateral_m": c["gap_lateral_m"], "motif": c["motif"]}
                        for c in cands[:14]]
 
     if not adjacents:

@@ -101,10 +101,26 @@ def test_alignement_deux_mitoyens_moyenne():
     assert info["regle"] == "moyenne_voisins_immediats" and info["n_voisins_utiles"] == 2
     print("OK deux mitoyens -> moyenne 5.0")
 
+def test_alignement_ecarte_maison_angle_autre_rue():
+    # Cote droit : PAS de vrai voisin de rue, seulement une maison d'angle de l'autre
+    # cote d'une rue perpendiculaire (separee lateralement du front par >5 m).
+    # Cote gauche : un vrai voisin, front 6.
+    # Sans la regle "hors rue" on moyennerait 6 et la facade laterale de l'angle (4)
+    # -> 5.0. Avec la regle, l'angle est ecarte -> on ne garde que gauche -> 6.0.
+    gauche = Polygon([(-6, 6), (-0.1, 6), (-0.1, 14), (-6, 14)])   # front 6, contigu
+    angle = Polygon([(16, 4), (23, 4), (23, 12), (16, 12)])        # proj>=16, gap=6 -> hors rue
+    ra, info = alignment_band_ra(P1, P2, [gauche, angle], CENTROID, fallback_m=6.0)
+    assert approx(ra, 6.0), (ra, info)
+    assert info["n_voisins_utiles"] == 1 and info["n_ecartes_hors_rue"] == 1
+    hr = [v for v in info["voisins"] if v["hors_rue"]]
+    assert hr and hr[0]["motif"] == "hors_alignement_rue", info["voisins"]
+    print("OK maison d'angle autre rue ecartee -> 6.0 (gap", hr[0]["gap_lateral_m"], "m)")
+
 if __name__ == "__main__":
     test_fixe(); test_lie_hauteur(); test_alignement_deux_voisins()
     test_alignement_fallback(); test_alignement_ignore_voisin_arriere()
     test_alignement_voisin_immediat_pas_mediane()
     test_alignement_mitoyennete_prioritaire()
     test_alignement_deux_mitoyens_moyenne()
+    test_alignement_ecarte_maison_angle_autre_rue()
     print("\nTOUS LES TESTS PASSENT.")
